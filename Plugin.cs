@@ -1,5 +1,6 @@
 using System;
 using System.Windows.Forms;
+using System.Threading.Tasks;
 
 namespace MusicBeePlugin
 {
@@ -9,6 +10,10 @@ namespace MusicBeePlugin
         private MusicBeeApiInterface _mbApi;
         private PluginInfo _about = new PluginInfo();
 
+        // ── Plugin modules ────────────────────────────────────────────────────
+        private LyricsService _lyricsService;
+        private LyricsPanel _lyricsPanel;
+
         // ─────────────────────────────────────────────────────────────────────
         //  INITIALISE — called by MusicBee immediately after loading the plugin
         // ─────────────────────────────────────────────────────────────────────
@@ -16,6 +21,11 @@ namespace MusicBeePlugin
         {
             _mbApi = new MusicBeeApiInterface();
             _mbApi.Initialise(apiInterfacePtr);
+
+            // Pass a function that gets embedded lyrics — avoids nested class issue
+            _lyricsService = new LyricsService(
+                () => _mbApi.NowPlaying_GetFileTag(MetaDataType.Lyrics)
+            );
 
             _about.PluginInfoVersion        = PluginInfoVersion;
             _about.Name                     = "LyricScroll";
@@ -35,6 +45,17 @@ namespace MusicBeePlugin
         }
 
         // ─────────────────────────────────────────────────────────────────────
+        //  PANEL — MusicBee calls this to embed our UI inside its interface
+        // ─────────────────────────────────────────────────────────────────────
+        public int OnDockablePanelCreated(Control panel)
+        {
+            _lyricsPanel = new LyricsPanel();
+            _lyricsPanel.Dock = DockStyle.Fill;
+            panel.Controls.Add(_lyricsPanel);
+            return -1;
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
         //  RECEIVE NOTIFICATION — MusicBee calls this when player events occur
         // ─────────────────────────────────────────────────────────────────────
         public void ReceiveNotification(string sourceFileUrl, NotificationType type)
@@ -42,17 +63,35 @@ namespace MusicBeePlugin
             switch (type)
             {
                 case NotificationType.PluginStartup:
-                    // Plugin loaded successfully — remove this MessageBox before release
-                    MessageBox.Show("LyricScroll loaded successfully!", "LyricScroll");
                     break;
 
                 case NotificationType.TrackChanged:
-                    // Track changed — lyrics logic will go here
-                    string title  = _mbApi.NowPlaying_GetFileTag(MetaDataType.TrackTitle);
-                    string artist = _mbApi.NowPlaying_GetFileTag(MetaDataType.Artist);
-                    MessageBox.Show($"Now playing: {artist} - {title}", "LyricScroll");
+                    OnTrackChanged();
+                    break;
+
+                case NotificationType.PlayStateChanged:
+                    bool isPlaying = _mbApi.Player_GetPlayState() == PlayState.Playing;
+                    _lyricsPanel?.SetPlayState(isPlaying);
                     break;
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        //  TRACK CHANGED — fetch lyrics and send to panel
+        // ─────────────────────────────────────────────────────────────────────
+        private void OnTrackChanged()
+        {
+            string title    = _mbApi.NowPlaying_GetFileTag(MetaDataType.TrackTitle);
+            string artist   = _mbApi.NowPlaying_GetFileTag(MetaDataType.Artist);
+            string album    = _mbApi.NowPlaying_GetFileTag(MetaDataType.Album);
+            int    duration = _mbApi.NowPlaying_GetDuration();
+
+            // Fetch lyrics asynchronously — does not block MusicBee's UI thread
+            Task.Run(async () =>
+            {
+                string lyrics = await _lyricsService.GetLyricsAsync(title, artist, album, duration);
+                _lyricsPanel?.SetLyrics(lyrics, duration);
+            });
         }
 
         // ── Required MusicBee plugin methods ─────────────────────────────────
