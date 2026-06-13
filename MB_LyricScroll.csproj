@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <PlatformTarget>x86</PlatformTarget>
+    <AssemblyName>MB_LyricScroll</AssemblyName>
+    <RootNamespace>MusicBeePlugin</RootNamespace>
+    <Nullable>enable</Nullable>
+    <LangVersion>10</LangVersion>
+    <OutputType>Library</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+  </ItemGroup>
+
+  <Target Name="CopyToMusicBee" AfterTargets="Build">
+    <Copy
+      SourceFiles="$(OutputPath)MB_LyricScroll.dll"
+      DestinationFolder="C:\Program Files (x86)\MusicBee\Plugins"
+      SkipUnchangedFiles="false" />
+    <Message Text="✔ MB_LyricScroll.dll copiado a MusicBee" Importance="high" />
+  </Target>
+
+</Project>
