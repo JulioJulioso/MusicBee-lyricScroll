@@ -9,6 +9,7 @@
     <LangVersion>10</LangVersion>
     <OutputType>Library</OutputType>
     <UseWindowsForms>true</UseWindowsForms>
+    <Prefer32Bit>true</Prefer32Bit>
   </PropertyGroup>
 
   <ItemGroup>
