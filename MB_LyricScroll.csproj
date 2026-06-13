@@ -15,12 +15,4 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
   </ItemGroup>
 
-  <Target Name="CopyToMusicBee" AfterTargets="Build">
-    <Copy
-      SourceFiles="$(OutputPath)MB_LyricScroll.dll"
-      DestinationFolder="C:\Program Files (x86)\MusicBee\Plugins"
-      SkipUnchangedFiles="false" />
-    <Message Text="✔ MB_LyricScroll.dll copiado a MusicBee" Importance="high" />
-  </Target>
-
 </Project>
