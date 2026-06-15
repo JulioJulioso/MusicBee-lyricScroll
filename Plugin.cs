@@ -32,7 +32,7 @@ namespace MusicBeePlugin
             _about.Description              = "Auto-scrolling lyrics panel for MusicBee";
             _about.Author                   = "JulioJulioso";
             _about.TargetApplication        = "";
-            _about.Type                     = PluginType.General;
+            _about.Type                     = PluginType.PanelView;
             _about.VersionMajor             = 1;
             _about.VersionMinor             = 0;
             _about.Revision                 = 1;

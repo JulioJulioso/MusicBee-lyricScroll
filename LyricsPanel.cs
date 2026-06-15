@@ -35,10 +35,12 @@ namespace MusicBeePlugin
             _lyricsLabel.ForeColor = Color.White;
             _lyricsLabel.BackColor = Color.Transparent;
             _lyricsLabel.Font = new Font("Segoe UI", 11f, FontStyle.Regular);
-            _lyricsLabel.AutoSize = true;
+            _lyricsLabel.AutoSize = false;
+            _lyricsLabel.Dock = DockStyle.None;
             _lyricsLabel.Location = new Point(10, 10);
-            _lyricsLabel.MaximumSize = new Size(this.Width - 20, 0);
-            _lyricsLabel.Padding = new Padding(0, 0, 0, 40);
+            _lyricsLabel.Width = this.Width - 20;
+            _lyricsLabel.AutoEllipsis = false;
+            _lyricsLabel.UseMnemonic = false;
 
             this.Controls.Add(_lyricsLabel);
 
@@ -70,6 +72,12 @@ namespace MusicBeePlugin
             }
 
             _lyricsLabel.Text = lyrics;
+            _lyricsLabel.Width = this.Width - 20;
+            using (Graphics g = _lyricsLabel.CreateGraphics())
+            {
+            SizeF size = g.MeasureString(lyrics, _lyricsLabel.Font, _lyricsLabel.Width);
+            _lyricsLabel.Height = (int)size.Height + 20;
+            }
             _lyricsLabel.Location = new Point(10, 10);
             _hasLyrics = true;
 
@@ -126,5 +134,12 @@ namespace MusicBeePlugin
             }
             base.Dispose(disposing);
         }
+
+        protected override void OnResize(EventArgs e)
+{
+            base.OnResize(e);
+            if (_lyricsLabel != null)
+            _lyricsLabel.Width = this.Width - 20;
+}
     }
 }
