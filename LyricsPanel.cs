@@ -5,57 +5,44 @@ using System.Windows.Forms;
 namespace MusicBeePlugin
 {
     /// <summary>
-    /// Panel that displays lyrics with automatic vertical scrolling.
-    /// Scroll speed is calculated based on track duration.
+    /// Panel that draws lyrics directly using GDI+.
+    /// This avoids Label overflow issues and gives full control over clipping and scroll.
     /// </summary>
     public class LyricsPanel : UserControl
     {
-        // ── UI controls ───────────────────────────────────────────────────────
-        private Label _lyricsLabel;
-        private Timer _scrollTimer;
-
-        // ── Scroll state ──────────────────────────────────────────────────────
-        private int _scrollPixelsPerTick = 1;
+        // ── State ─────────────────────────────────────────────────────────────
+        private string _lyrics = string.Empty;
+        private float _scrollY = 0f;
+        private float _scrollPixelsPerTick = 0f;
+        private float _scrollAccumulator = 0f;
         private bool _isPaused = false;
         private bool _hasLyrics = false;
+        private int _durationMs = 0;
+        private float _totalTextHeight = 0f;
+
+        // ── Drawing ───────────────────────────────────────────────────────────
+        private readonly Font _font = new Font("Segoe UI", 11f, FontStyle.Regular);
+        private readonly Brush _textBrush = new SolidBrush(Color.White);
+        private readonly int _padding = 10;
+
+        // ── Timer ─────────────────────────────────────────────────────────────
+        private Timer _scrollTimer;
 
         public LyricsPanel()
         {
-            InitializeControls();
-        }
-
-        private void InitializeControls()
-        {
-            // Panel background
             this.BackColor = Color.Black;
             this.DoubleBuffered = true;
 
-            // Label that holds the full lyrics text
-            _lyricsLabel = new Label();
-            _lyricsLabel.ForeColor = Color.White;
-            _lyricsLabel.BackColor = Color.Transparent;
-            _lyricsLabel.Font = new Font("Segoe UI", 11f, FontStyle.Regular);
-            _lyricsLabel.AutoSize = false;
-            _lyricsLabel.Dock = DockStyle.None;
-            _lyricsLabel.Location = new Point(10, 10);
-            _lyricsLabel.Width = this.Width - 20;
-            _lyricsLabel.AutoEllipsis = false;
-            _lyricsLabel.UseMnemonic = false;
-
-            this.Controls.Add(_lyricsLabel);
-
-            // Timer that moves the label upward every tick
             _scrollTimer = new Timer();
-            _scrollTimer.Interval = 50; // fires every 50ms = 20 times per second
+            _scrollTimer.Interval = 50; // 20 times per second
             _scrollTimer.Tick += OnScrollTick;
         }
 
         /// <summary>
-        /// Receives lyrics text and duration, calculates scroll speed and starts scrolling.
+        /// Receives lyrics and duration, measures text height, starts scroll.
         /// </summary>
         public void SetLyrics(string lyrics, int durationMs)
         {
-            // Must update UI from the UI thread
             if (this.InvokeRequired)
             {
                 this.Invoke(new Action(() => SetLyrics(lyrics, durationMs)));
@@ -63,38 +50,55 @@ namespace MusicBeePlugin
             }
 
             _scrollTimer.Stop();
+            _scrollY = 0f;
+            _scrollAccumulator = 0f;
+            _durationMs = durationMs;
 
             if (string.IsNullOrWhiteSpace(lyrics))
             {
-                _lyricsLabel.Text = "No lyrics found.";
+                _lyrics = "No lyrics found.";
                 _hasLyrics = false;
+                _totalTextHeight = 0f;
+                this.Invalidate();
                 return;
             }
 
-            _lyricsLabel.Text = lyrics;
-            _lyricsLabel.Width = this.Width - 20;
-            using (Graphics g = _lyricsLabel.CreateGraphics())
-            {
-            SizeF size = g.MeasureString(lyrics, _lyricsLabel.Font, _lyricsLabel.Width);
-            _lyricsLabel.Height = (int)size.Height + 20;
-            }
-            _lyricsLabel.Location = new Point(10, 10);
+            _lyrics = lyrics;
             _hasLyrics = true;
 
-            // Calculate scroll speed:
-            // total pixels to scroll = label height - panel height
-            // we need to cover that distance in durationMs milliseconds
-            // timer fires every 50ms, so total ticks = durationMs / 50
-            int totalPixels = Math.Max(_lyricsLabel.Height - this.Height, 0);
-            int totalTicks  = Math.Max(durationMs / 50, 1);
-            _scrollPixelsPerTick = Math.Max(totalPixels / totalTicks, 1);
+            // Measure total text height using current panel width
+            MeasureAndStartScroll();
+        }
+
+        private void MeasureAndStartScroll()
+        {
+            if (this.Width <= 0) return;
+
+            int textWidth = this.Width - (_padding * 2);
+
+            using (Graphics g = this.CreateGraphics())
+            {
+                SizeF size = g.MeasureString(_lyrics, _font, textWidth);
+                _totalTextHeight = size.Height;
+            }
+
+            this.Invalidate();
+
+            // Calculate scroll speed
+            float totalPixels = Math.Max(_totalTextHeight - this.Height + _padding, 0f);
+
+            if (totalPixels <= 0f)
+                return; // All lyrics visible — no scroll needed
+
+            int totalTicks = Math.Max(_durationMs / 50, 1);
+            _scrollPixelsPerTick = Math.Max(totalPixels / totalTicks, 0.1f);
 
             if (!_isPaused)
                 _scrollTimer.Start();
         }
 
         /// <summary>
-        /// Called when play state changes — pauses or resumes scroll.
+        /// Called when play/pause state changes.
         /// </summary>
         public void SetPlayState(bool isPlaying)
         {
@@ -106,23 +110,65 @@ namespace MusicBeePlugin
                 _scrollTimer.Start();
         }
 
-        /// <summary>
-        /// Moves the lyrics label up by one scroll step.
-        /// Stops when the bottom of the label is reached.
-        /// </summary>
         private void OnScrollTick(object sender, EventArgs e)
         {
-            int newY = _lyricsLabel.Location.Y - _scrollPixelsPerTick;
+            System.IO.File.AppendAllText(@"C:\temp\lyricscroll_debug.txt", 
+             $"tick: scrollY={_scrollY} totalH={_totalTextHeight} panelH={this.Height}\n");
+             
+            _scrollAccumulator += _scrollPixelsPerTick;
+            float pixels = (int)_scrollAccumulator;
 
-            // Stop scrolling when last line is visible
-            int minY = -((_lyricsLabel.Height - this.Height) + 10);
-            if (newY < minY)
+            if (pixels < 1f)
+                return;
+
+            _scrollAccumulator -= pixels;
+
+            float maxScroll = Math.Max(_totalTextHeight - this.Height + _padding * 2, 0f);
+
+            if (_scrollY >= maxScroll)
             {
                 _scrollTimer.Stop();
                 return;
             }
 
-            _lyricsLabel.Location = new Point(_lyricsLabel.Location.X, newY);
+            _scrollY = Math.Min(_scrollY + pixels, maxScroll);
+          
+            // Redraw panel with new scroll position
+            this.Invalidate();
+        }
+
+        /// <summary>
+        /// Draws lyrics text directly — clipping is automatic since we draw inside the control bounds.
+        /// </summary>
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+
+            if (string.IsNullOrEmpty(_lyrics))
+                return;
+
+            Graphics g = e.Graphics;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            // Clip strictly to our bounds — nothing draws outside
+            g.SetClip(this.ClientRectangle);
+
+            RectangleF textRect = new RectangleF(
+                _padding,
+                _padding - _scrollY,
+                this.Width - (_padding * 2),
+                _totalTextHeight + _padding
+            );
+
+            g.DrawString(_lyrics, _font, _textBrush, textRect);
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            // Recalculate when panel size changes
+            if (_hasLyrics && this.Width > 0)
+                MeasureAndStartScroll();
         }
 
         protected override void Dispose(bool disposing)
@@ -131,15 +177,10 @@ namespace MusicBeePlugin
             {
                 _scrollTimer?.Stop();
                 _scrollTimer?.Dispose();
+                _font?.Dispose();
+                _textBrush?.Dispose();
             }
             base.Dispose(disposing);
         }
-
-        protected override void OnResize(EventArgs e)
-{
-            base.OnResize(e);
-            if (_lyricsLabel != null)
-            _lyricsLabel.Width = this.Width - 20;
-}
     }
 }

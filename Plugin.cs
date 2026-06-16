@@ -63,6 +63,7 @@ namespace MusicBeePlugin
             switch (type)
             {
                 case NotificationType.PluginStartup:
+                    OnTrackChanged();
                     break;
 
                 case NotificationType.TrackChanged:
