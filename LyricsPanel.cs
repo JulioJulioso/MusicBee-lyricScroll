@@ -39,7 +39,7 @@ namespace MusicBeePlugin
         }
 
         /// <summary>
-        /// Receives lyrics and duration, measures text height, starts scroll.
+        /// Receives lyrics and duration from mb, measures text height, starts scroll.
         /// </summary>
         public void SetLyrics(string lyrics, int durationMs)
         {
