@@ -5,11 +5,14 @@ using System.Windows.Forms;
 namespace MusicBeePlugin
 {
     /// <summary>
-    /// Panel that draws lyrics directly using GDI+.
-    /// Scroll position follows MusicBee playback position (gentle autoscroll, not karaoke).
+    /// Panel that draws lyrics with TextRenderer (not GDI+ DrawString — that crashes on long text).
+    /// Scroll follows MusicBee playback position (gentle autoscroll, not karaoke).
     /// </summary>
     public class LyricsPanel : UserControl
     {
+        // GDI+/TextRenderer layout sizes above ~32k often throw ExternalException.
+        private const int MaxLayoutHeight = 16000;
+
         private string _lyrics = string.Empty;
         private float _scrollY = 0f;
         private bool _hasLyrics = false;
@@ -18,9 +21,11 @@ namespace MusicBeePlugin
         private float _totalTextHeight = 0f;
 
         private readonly Font _font = new Font("Segoe UI", 11f, FontStyle.Regular);
-        private readonly Brush _textBrush = new SolidBrush(Color.White);
         private readonly int _padding = 10;
         private readonly Func<int> _getPositionMs;
+        private readonly TextFormatFlags _textFlags =
+            TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPadding |
+            TextFormatFlags.PreserveGraphicsClipping | TextFormatFlags.NoPrefix;
 
         private Timer _scrollTimer;
         private bool _measurePending;
@@ -38,9 +43,6 @@ namespace MusicBeePlugin
             _scrollTimer.Tick += OnScrollTick;
         }
 
-        /// <summary>
-        /// Global hold at the top before scroll starts (does not shrink duration in the rate math).
-        /// </summary>
         public void SetStartDelayMs(int startDelayMs)
         {
             _startDelayMs = Math.Max(0, startDelayMs);
@@ -68,25 +70,27 @@ namespace MusicBeePlugin
                 return;
             }
 
-            _lyrics = lyrics;
+            _lyrics = NormalizeLyrics(lyrics);
             _hasLyrics = true;
             MeasureTextHeight();
             SyncScrollFromPosition();
             Invalidate();
-            // Always poll while lyrics are shown. Pause/stop freeze via unchanged Player_GetPosition;
-            // Loading must not stop the timer (seek / track change briefly leave Playing).
             _scrollTimer.Start();
         }
 
-        /// <summary>
-        /// Kept for Plugin notifications. Does not stop the timer — Loading≠Playing used to
-        /// freeze scroll after seek / next track.
-        /// </summary>
         public void SetPlayState(bool isPlaying)
         {
             if (_hasLyrics)
                 _scrollTimer.Start();
             SyncScrollFromPosition();
+        }
+
+        private static string NormalizeLyrics(string lyrics)
+        {
+            // Null chars and odd line endings can make GDI paint blow up.
+            return lyrics.Replace("\0", "")
+                         .Replace("\r\n", "\n")
+                         .Replace('\r', '\n');
         }
 
         private void MeasureTextHeight()
@@ -101,9 +105,9 @@ namespace MusicBeePlugin
                 Size size = TextRenderer.MeasureText(
                     _lyrics,
                     _font,
-                    new Size(textWidth, 100000),
-                    TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPadding);
-                _totalTextHeight = size.Height;
+                    new Size(textWidth, MaxLayoutHeight),
+                    _textFlags);
+                _totalTextHeight = Math.Min(size.Height, MaxLayoutHeight);
             }
             catch (Exception)
             {
@@ -113,7 +117,6 @@ namespace MusicBeePlugin
 
         private void OnScrollTick(object sender, EventArgs e)
         {
-            // Remeasure if SetLyrics ran before the panel had a real width.
             if (_hasLyrics && _totalTextHeight <= 0f && Width > 0)
                 MeasureTextHeight();
 
@@ -128,7 +131,6 @@ namespace MusicBeePlugin
             float maxScroll = Math.Max(_totalTextHeight - Height + _padding * 2, 0f);
             float next = ScrollMath.ScrollY(_getPositionMs(), _durationMs, _startDelayMs, maxScroll);
 
-            // Only skip redraw when the pixel row did not change (0.05f was too coarse for long tracks).
             if ((int)next == (int)_scrollY)
             {
                 _scrollY = next;
@@ -143,21 +145,35 @@ namespace MusicBeePlugin
         {
             base.OnPaint(e);
 
-            if (string.IsNullOrEmpty(_lyrics))
+            if (string.IsNullOrEmpty(_lyrics) || Width <= 0 || Height <= 0)
                 return;
 
-            Graphics g = e.Graphics;
-            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
-            g.SetClip(ClientRectangle);
+            int textWidth = Width - (_padding * 2);
+            if (textWidth < 1)
+                return;
 
-            RectangleF textRect = new RectangleF(
+            int layoutHeight = (int)Math.Min(
+                Math.Max(_totalTextHeight + _padding, Height),
+                MaxLayoutHeight);
+            if (layoutHeight < 1)
+                layoutHeight = Height;
+
+            Rectangle textRect = new Rectangle(
                 _padding,
-                _padding - _scrollY,
-                Width - (_padding * 2),
-                Math.Max(_totalTextHeight, Height) + _padding
-            );
+                _padding - (int)_scrollY,
+                textWidth,
+                layoutHeight);
 
-            g.DrawString(_lyrics, _font, _textBrush, textRect);
+            try
+            {
+                e.Graphics.SetClip(ClientRectangle);
+                // TextRenderer matches MeasureText and avoids GDI+ DrawString crashes on long lyrics.
+                TextRenderer.DrawText(e.Graphics, _lyrics, _font, textRect, Color.White, _textFlags);
+            }
+            catch (Exception)
+            {
+                // Swallow paint failures — an unhandled paint exception paints the red-X death panel.
+            }
         }
 
         protected override void OnResize(EventArgs e)
@@ -186,7 +202,6 @@ namespace MusicBeePlugin
                 _scrollTimer?.Stop();
                 _scrollTimer?.Dispose();
                 _font?.Dispose();
-                _textBrush?.Dispose();
             }
             base.Dispose(disposing);
         }

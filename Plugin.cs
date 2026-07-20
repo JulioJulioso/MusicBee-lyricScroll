@@ -20,9 +20,7 @@ namespace MusicBeePlugin
             _mbApi = new MusicBeeApiInterface();
             _mbApi.Initialise(apiInterfacePtr);
 
-            _lyricsService = new LyricsService(
-                () => _mbApi.NowPlaying_GetFileTag(MetaDataType.Lyrics)
-            );
+            _lyricsService = new LyricsService(GetLocalLyrics);
 
             _startDelayMs = LoadStartDelayMs();
 
@@ -34,7 +32,7 @@ namespace MusicBeePlugin
             _about.Type                     = PluginType.PanelView;
             _about.VersionMajor             = 1;
             _about.VersionMinor             = 0;
-            _about.Revision                 = 3;
+            _about.Revision                 = 4;
             _about.MinInterfaceVersion      = MinInterfaceVersion;
             _about.MinApiRevision           = MinApiRevision;
             _about.ReceiveNotifications     = ReceiveNotificationFlags.PlayerEvents;
@@ -247,6 +245,48 @@ namespace MusicBeePlugin
                         _lyricsPanel?.SetPlayState(isPlaying);
                     });
                     break;
+
+                case NotificationType.NowPlayingLyricsReady:
+                    // MusicBee finished downloading/resolving lyrics for the current track.
+                    OnTrackChanged();
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// Prefer MusicBee's resolved lyrics, then downloaded, then the raw Lyrics tag.
+        /// </summary>
+        private string GetLocalLyrics()
+        {
+            string text = TryInvoke(_mbApi.NowPlaying_GetLyrics);
+            if (!string.IsNullOrWhiteSpace(text))
+                return text;
+
+            text = TryInvoke(_mbApi.NowPlaying_GetDownloadedLyrics);
+            if (!string.IsNullOrWhiteSpace(text))
+                return text;
+
+            try
+            {
+                return _mbApi.NowPlaying_GetFileTag(MetaDataType.Lyrics) ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string TryInvoke(NowPlaying_GetLyricsDelegate getter)
+        {
+            try
+            {
+                if (getter == null)
+                    return string.Empty;
+                return getter() ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
             }
         }
 
