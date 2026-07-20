@@ -27,11 +27,13 @@ namespace MusicBeePlugin
 
         // ── Timer ─────────────────────────────────────────────────────────────
         private Timer _scrollTimer;
+        private bool _measurePending;
 
         public LyricsPanel()
         {
             this.BackColor = Color.Black;
             this.DoubleBuffered = true;
+            this.SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
 
             _scrollTimer = new Timer();
             _scrollTimer.Interval = 50; // 20 times per second
@@ -72,23 +74,33 @@ namespace MusicBeePlugin
 
         private void MeasureAndStartScroll()
         {
-            if (this.Width <= 0) return;
+            if (!IsHandleCreated || Width <= 0 || string.IsNullOrEmpty(_lyrics))
+                return;
 
-            int textWidth = this.Width - (_padding * 2);
+            int textWidth = Math.Max(Width - (_padding * 2), 1);
 
-            using (Graphics g = this.CreateGraphics())
+            // CreateGraphics + MeasureString during OnResize often throws GDI+ ExternalException.
+            // TextRenderer is safer; still guard — huge lyrics can exceed GDI limits.
+            try
             {
-                SizeF size = g.MeasureString(_lyrics, _font, textWidth);
+                Size size = TextRenderer.MeasureText(
+                    _lyrics,
+                    _font,
+                    new Size(textWidth, 100000),
+                    TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPadding);
                 _totalTextHeight = size.Height;
             }
+            catch (Exception)
+            {
+                _totalTextHeight = Height;
+                return;
+            }
 
-            this.Invalidate();
+            Invalidate();
 
-            // Calculate scroll speed
-            float totalPixels = Math.Max(_totalTextHeight - this.Height + _padding, 0f);
-
+            float totalPixels = Math.Max(_totalTextHeight - Height + _padding, 0f);
             if (totalPixels <= 0f)
-                return; // All lyrics visible — no scroll needed
+                return;
 
             int totalTicks = Math.Max(_durationMs / 50, 1);
             _scrollPixelsPerTick = Math.Max(totalPixels / totalTicks, 0.1f);
@@ -112,9 +124,6 @@ namespace MusicBeePlugin
 
         private void OnScrollTick(object sender, EventArgs e)
         {
-            System.IO.File.AppendAllText(@"C:\temp\lyricscroll_debug.txt", 
-             $"tick: scrollY={_scrollY} totalH={_totalTextHeight} panelH={this.Height}\n");
-             
             _scrollAccumulator += _scrollPixelsPerTick;
             float pixels = (int)_scrollAccumulator;
 
@@ -166,9 +175,17 @@ namespace MusicBeePlugin
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
-            // Recalculate when panel size changes
-            if (_hasLyrics && this.Width > 0)
-                MeasureAndStartScroll();
+            // Defer measure — calling GDI measure inside UpdateBounds crashes MusicBee.
+            if (!_hasLyrics || Width <= 0 || _measurePending || !IsHandleCreated)
+                return;
+
+            _measurePending = true;
+            BeginInvoke(new Action(() =>
+            {
+                _measurePending = false;
+                if (_hasLyrics && !IsDisposed)
+                    MeasureAndStartScroll();
+            }));
         }
 
         protected override void Dispose(bool disposing)

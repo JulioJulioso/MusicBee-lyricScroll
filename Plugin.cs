@@ -31,7 +31,7 @@ namespace MusicBeePlugin
             _about.Name                     = "LyricScroll";
             _about.Description              = "Auto-scrolling lyrics panel for MusicBee";
             _about.Author                   = "JulioJulioso";
-            _about.TargetApplication        = "";
+            _about.TargetApplication        = "LyricScroll";
             _about.Type                     = PluginType.PanelView;
             _about.VersionMajor             = 1;
             _about.VersionMinor             = 0;
@@ -52,7 +52,21 @@ namespace MusicBeePlugin
             _lyricsPanel = new LyricsPanel();
             _lyricsPanel.Dock = DockStyle.Fill;
             panel.Controls.Add(_lyricsPanel);
-            return -1;
+
+            // Defer until the panel has a real handle/size — measuring during create crashes GDI+.
+            panel.BeginInvoke(new Action(() =>
+            {
+                if (_lyricsPanel == null || _lyricsPanel.IsDisposed)
+                    return;
+                bool isPlaying = _mbApi.Player_GetPlayState() == PlayState.Playing;
+                _lyricsPanel.SetPlayState(isPlaying);
+                OnTrackChanged();
+            }));
+
+            // Fixed height so LyricScroll cannot swallow the whole main window when docked badly.
+            // MusicBee still lets the user resize the docked panel in the layout editor.
+            // ponytail: skip DPI scale here — CreateGraphics during panel create is crash-prone.
+            return 220;
         }
 
         // ─────────────────────────────────────────────────────────────────────
