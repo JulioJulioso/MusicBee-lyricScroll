@@ -1,4 +1,5 @@
 using System;
+using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
 using System.Threading.Tasks;
@@ -32,7 +33,7 @@ namespace MusicBeePlugin
             _about.Type                     = PluginType.PanelView;
             _about.VersionMajor             = 1;
             _about.VersionMinor             = 0;
-            _about.Revision                 = 4;
+            _about.Revision                 = 5;
             _about.MinInterfaceVersion      = MinInterfaceVersion;
             _about.MinApiRevision           = MinApiRevision;
             _about.ReceiveNotifications     = ReceiveNotificationFlags.PlayerEvents;
@@ -51,13 +52,18 @@ namespace MusicBeePlugin
 
             // MB 3.5+ calls this on the GUI thread. Build UI synchronously — panel.BeginInvoke
             // on cold start often never runs, leaving a gray empty host until the plugin is toggled.
+            panel.MinimumSize = Size.Empty;
+            panel.MaximumSize = Size.Empty;
             BuildPanelUi(panel);
             RefreshLyrics();
 
             // Layout may finish after this returns; poke again via the main MusicBee window.
             ScheduleColdStartRepairs();
 
-            return 220;
+            // 0 = resizable (MusicBee keeps the dock splitter height the user sets).
+            // Positive = fixed height and drag-resize snaps back. If resize still fails after
+            // updating the DLL, remove LyricScroll from the layout and add it again.
+            return 0;
         }
 
         private void HostPanel_VisibleChanged(object sender, EventArgs e)
@@ -200,8 +206,11 @@ namespace MusicBeePlugin
                             if (_hostPanel == null || _hostPanel.IsDisposed)
                                 return;
 
-                            EnsurePanelUi(_hostPanel);
-                            _hostPanel.PerformLayout();
+                            // Only re-attach if the child is missing — avoid layout fights
+                            // while the user is resizing the dock splitter.
+                            if (_lyricsPanel == null || _lyricsPanel.IsDisposed || _lyricsPanel.Parent != _hostPanel)
+                                EnsurePanelUi(_hostPanel);
+
                             RefreshLyrics();
                         });
                     }
