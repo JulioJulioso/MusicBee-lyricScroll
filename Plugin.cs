@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Windows.Forms;
 using System.Threading.Tasks;
 
@@ -6,26 +7,24 @@ namespace MusicBeePlugin
 {
     public partial class Plugin
     {
-        // ── MusicBee API connection ───────────────────────────────────────────
         private MusicBeeApiInterface _mbApi;
         private PluginInfo _about = new PluginInfo();
 
-        // ── Plugin modules ────────────────────────────────────────────────────
         private LyricsService _lyricsService;
         private LyricsPanel _lyricsPanel;
+        private Control _hostPanel;
+        private int _startDelayMs;
 
-        // ─────────────────────────────────────────────────────────────────────
-        //  INITIALISE — called by MusicBee immediately after loading the plugin
-        // ─────────────────────────────────────────────────────────────────────
         public PluginInfo Initialise(IntPtr apiInterfacePtr)
         {
             _mbApi = new MusicBeeApiInterface();
             _mbApi.Initialise(apiInterfacePtr);
 
-            // Pass a function that gets embedded lyrics — avoids nested class issue
             _lyricsService = new LyricsService(
                 () => _mbApi.NowPlaying_GetFileTag(MetaDataType.Lyrics)
             );
+
+            _startDelayMs = LoadStartDelayMs();
 
             _about.PluginInfoVersion        = PluginInfoVersion;
             _about.Name                     = "LyricScroll";
@@ -35,65 +34,222 @@ namespace MusicBeePlugin
             _about.Type                     = PluginType.PanelView;
             _about.VersionMajor             = 1;
             _about.VersionMinor             = 0;
-            _about.Revision                 = 1;
+            _about.Revision                 = 3;
             _about.MinInterfaceVersion      = MinInterfaceVersion;
             _about.MinApiRevision           = MinApiRevision;
             _about.ReceiveNotifications     = ReceiveNotificationFlags.PlayerEvents;
-            _about.ConfigurationPanelHeight = 0;
+            _about.ConfigurationPanelHeight = 50;
 
             return _about;
         }
 
-        // ─────────────────────────────────────────────────────────────────────
-        //  PANEL — MusicBee calls this to embed our UI inside its interface
-        // ─────────────────────────────────────────────────────────────────────
         public int OnDockablePanelCreated(Control panel)
         {
-            _lyricsPanel = new LyricsPanel();
-            _lyricsPanel.Dock = DockStyle.Fill;
-            panel.Controls.Add(_lyricsPanel);
+            if (_hostPanel != null)
+                _hostPanel.VisibleChanged -= HostPanel_VisibleChanged;
 
-            // Defer until the panel has a real handle/size — measuring during create crashes GDI+.
-            panel.BeginInvoke(new Action(() =>
-            {
-                if (_lyricsPanel == null || _lyricsPanel.IsDisposed)
-                    return;
-                bool isPlaying = _mbApi.Player_GetPlayState() == PlayState.Playing;
-                _lyricsPanel.SetPlayState(isPlaying);
-                OnTrackChanged();
-            }));
+            _hostPanel = panel;
+            panel.VisibleChanged += HostPanel_VisibleChanged;
 
-            // Fixed height so LyricScroll cannot swallow the whole main window when docked badly.
-            // MusicBee still lets the user resize the docked panel in the layout editor.
-            // ponytail: skip DPI scale here — CreateGraphics during panel create is crash-prone.
+            // MB 3.5+ calls this on the GUI thread. Build UI synchronously — panel.BeginInvoke
+            // on cold start often never runs, leaving a gray empty host until the plugin is toggled.
+            BuildPanelUi(panel);
+            RefreshLyrics();
+
+            // Layout may finish after this returns; poke again via the main MusicBee window.
+            ScheduleColdStartRepairs();
+
             return 220;
         }
 
-        // ─────────────────────────────────────────────────────────────────────
-        //  RECEIVE NOTIFICATION — MusicBee calls this when player events occur
-        // ─────────────────────────────────────────────────────────────────────
+        private void HostPanel_VisibleChanged(object sender, EventArgs e)
+        {
+            if (_hostPanel == null || !_hostPanel.Visible || _hostPanel.IsDisposed)
+                return;
+
+            InvokeOnMbUi(() =>
+            {
+                if (_hostPanel == null || _hostPanel.IsDisposed)
+                    return;
+                EnsurePanelUi(_hostPanel);
+                RefreshLyrics();
+            });
+        }
+
+        /// <summary>
+        /// Attach lyrics UI if missing; do not recreate a healthy panel (avoids flicker on repairs).
+        /// </summary>
+        private void EnsurePanelUi(Control panel)
+        {
+            if (panel == null || panel.IsDisposed)
+                return;
+
+            if (_lyricsPanel != null && !_lyricsPanel.IsDisposed && _lyricsPanel.Parent == panel)
+            {
+                _lyricsPanel.Visible = true;
+                _lyricsPanel.BringToFront();
+                return;
+            }
+
+            BuildPanelUi(panel);
+        }
+
+        /// <summary>
+        /// Recreate the lyrics control on the host MusicBee gives us.
+        /// </summary>
+        private void BuildPanelUi(Control panel)
+        {
+            if (panel == null || panel.IsDisposed)
+                return;
+
+            if (_lyricsPanel != null)
+            {
+                try
+                {
+                    if (!_lyricsPanel.IsDisposed)
+                    {
+                        _lyricsPanel.Parent?.Controls.Remove(_lyricsPanel);
+                        _lyricsPanel.Dispose();
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+                _lyricsPanel = null;
+            }
+
+            _lyricsPanel = new LyricsPanel(() => _mbApi.Player_GetPosition());
+            _lyricsPanel.Dock = DockStyle.Fill;
+            _lyricsPanel.SetStartDelayMs(_startDelayMs);
+            panel.Controls.Add(_lyricsPanel);
+            _lyricsPanel.BringToFront();
+            panel.PerformLayout();
+        }
+
+        private void RefreshLyrics()
+        {
+            if (_lyricsPanel == null || _lyricsPanel.IsDisposed)
+                return;
+
+            _lyricsPanel.SetPlayState(_mbApi.Player_GetPlayState() == PlayState.Playing);
+            OnTrackChanged();
+        }
+
+        /// <summary>
+        /// Run on MusicBee's main UI thread (notifications are often background threads).
+        /// </summary>
+        private void InvokeOnMbUi(Action action)
+        {
+            if (action == null)
+                return;
+
+            try
+            {
+                IntPtr handle = _mbApi.MB_GetWindowHandle();
+                Control mbForm = handle != IntPtr.Zero ? Control.FromHandle(handle) : null;
+
+                if (mbForm != null && !mbForm.IsDisposed)
+                {
+                    if (mbForm.InvokeRequired)
+                        mbForm.BeginInvoke(action);
+                    else
+                        action();
+                    return;
+                }
+            }
+            catch
+            {
+                // fall through
+            }
+
+            // Fallback: host panel or lyrics panel
+            try
+            {
+                Control c = _hostPanel ?? (Control)_lyricsPanel;
+                if (c != null && !c.IsDisposed && c.IsHandleCreated)
+                {
+                    if (c.InvokeRequired)
+                        c.BeginInvoke(action);
+                    else
+                        action();
+                    return;
+                }
+            }
+            catch
+            {
+                // ignore
+            }
+
+            try { action(); }
+            catch { /* ignore */ }
+        }
+
+        private void ScheduleColdStartRepairs()
+        {
+            // ponytail: Task.Delay + MB Invoke is more reliable than a WinForms Timer during startup.
+            int[] delaysMs = { 300, 1000, 2500, 5000 };
+            foreach (int delay in delaysMs)
+            {
+                int captured = delay;
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(captured).ConfigureAwait(false);
+                        InvokeOnMbUi(() =>
+                        {
+                            if (_hostPanel == null || _hostPanel.IsDisposed)
+                                return;
+
+                            EnsurePanelUi(_hostPanel);
+                            _hostPanel.PerformLayout();
+                            RefreshLyrics();
+                        });
+                    }
+                    catch
+                    {
+                        // ignore
+                    }
+                });
+            }
+        }
+
         public void ReceiveNotification(string sourceFileUrl, NotificationType type)
         {
             switch (type)
             {
                 case NotificationType.PluginStartup:
-                    OnTrackChanged();
+                    InvokeOnMbUi(() =>
+                    {
+                        if (_hostPanel != null && !_hostPanel.IsDisposed)
+                        {
+                            EnsurePanelUi(_hostPanel);
+                            RefreshLyrics();
+                        }
+                    });
+                    ScheduleColdStartRepairs();
                     break;
 
                 case NotificationType.TrackChanged:
+                    InvokeOnMbUi(() =>
+                    {
+                        if (_lyricsPanel != null && !_lyricsPanel.IsDisposed)
+                            _lyricsPanel.SetPlayState(_mbApi.Player_GetPlayState() == PlayState.Playing);
+                    });
                     OnTrackChanged();
                     break;
 
                 case NotificationType.PlayStateChanged:
-                    bool isPlaying = _mbApi.Player_GetPlayState() == PlayState.Playing;
-                    _lyricsPanel?.SetPlayState(isPlaying);
+                    InvokeOnMbUi(() =>
+                    {
+                        bool isPlaying = _mbApi.Player_GetPlayState() == PlayState.Playing;
+                        _lyricsPanel?.SetPlayState(isPlaying);
+                    });
                     break;
             }
         }
 
-        // ─────────────────────────────────────────────────────────────────────
-        //  TRACK CHANGED — fetch lyrics and send to panel
-        // ─────────────────────────────────────────────────────────────────────
         private void OnTrackChanged()
         {
             string title    = _mbApi.NowPlaying_GetFileTag(MetaDataType.TrackTitle);
@@ -101,18 +257,131 @@ namespace MusicBeePlugin
             string album    = _mbApi.NowPlaying_GetFileTag(MetaDataType.Album);
             int    duration = _mbApi.NowPlaying_GetDuration();
 
-            // Fetch lyrics asynchronously — does not block MusicBee's UI thread
             Task.Run(async () =>
             {
                 string lyrics = await _lyricsService.GetLyricsAsync(title, artist, album, duration);
-                _lyricsPanel?.SetLyrics(lyrics, duration);
+                InvokeOnMbUi(() => _lyricsPanel?.SetLyrics(lyrics, duration));
             });
         }
 
-        // ── Required MusicBee plugin methods ─────────────────────────────────
-        public bool Configure(IntPtr panelHandle) { return false; }
-        public void SaveSettings() { }
-        public void Close(PluginCloseReason reason) { }
-        public void Uninstall() { }
+        public bool Configure(IntPtr panelHandle)
+        {
+            if (panelHandle == IntPtr.Zero)
+                return false;
+
+            Panel panel = (Panel)Control.FromHandle(panelHandle);
+            panel.Controls.Clear();
+
+            Label label = new Label
+            {
+                Text = "Start delay (seconds):",
+                AutoSize = true,
+                Left = 8,
+                Top = 14
+            };
+
+            NumericUpDown delayUpDown = new NumericUpDown
+            {
+                Minimum = 0,
+                Maximum = 600,
+                Value = Math.Min(600, Math.Max(0, _startDelayMs / 1000)),
+                Left = 170,
+                Top = 10,
+                Width = 80
+            };
+
+            delayUpDown.ValueChanged += (s, e) =>
+            {
+                _startDelayMs = (int)delayUpDown.Value * 1000;
+                _lyricsPanel?.SetStartDelayMs(_startDelayMs);
+            };
+
+            panel.Controls.Add(label);
+            panel.Controls.Add(delayUpDown);
+            return false;
+        }
+
+        public void SaveSettings()
+        {
+            SaveStartDelayMs(_startDelayMs);
+            _lyricsPanel?.SetStartDelayMs(_startDelayMs);
+        }
+
+        public void Close(PluginCloseReason reason)
+        {
+            if (_hostPanel != null)
+            {
+                _hostPanel.VisibleChanged -= HostPanel_VisibleChanged;
+                _hostPanel = null;
+            }
+
+            if (_lyricsPanel != null && !_lyricsPanel.IsDisposed)
+            {
+                try { _lyricsPanel.Dispose(); }
+                catch { /* ignore */ }
+            }
+            _lyricsPanel = null;
+        }
+
+        public void Uninstall()
+        {
+            try
+            {
+                string path = DelaySettingsPath();
+                if (path != null && File.Exists(path))
+                    File.Delete(path);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private string DelaySettingsPath()
+        {
+            try
+            {
+                string dir = _mbApi.Setting_GetPersistentStoragePath();
+                if (string.IsNullOrEmpty(dir))
+                    return null;
+                return Path.Combine(dir, "LyricScroll_startDelayMs.txt");
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private int LoadStartDelayMs()
+        {
+            try
+            {
+                string path = DelaySettingsPath();
+                if (path == null || !File.Exists(path))
+                    return 0;
+                if (int.TryParse(File.ReadAllText(path).Trim(), out int ms) && ms >= 0)
+                    return ms;
+            }
+            catch
+            {
+                // ignore
+            }
+            return 0;
+        }
+
+        private void SaveStartDelayMs(int ms)
+        {
+            try
+            {
+                string path = DelaySettingsPath();
+                if (path == null)
+                    return;
+                File.WriteAllText(path, Math.Max(0, ms).ToString());
+            }
+            catch
+            {
+                // ignore
+            }
+        }
     }
 }
