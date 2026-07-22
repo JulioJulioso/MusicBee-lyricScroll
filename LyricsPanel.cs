@@ -13,7 +13,6 @@ namespace MusicBeePlugin
     public class LyricsPanel : UserControl
     {
         private const int MaxLayoutHeight = 16000;
-        private const int SyncedLineGap = 6;
 
         private string _lyrics = string.Empty;
         private string _sourceLabel = string.Empty;
@@ -32,7 +31,11 @@ namespace MusicBeePlugin
         private Font _font;
         private Color _textColor = Color.FromArgb(0xE8, 0xE6, 0xE3);
         private Color _dimTextColor = Color.FromArgb(0x7A, 0x78, 0x75);
-        private int _padding = 14;
+        private Color _effectColor = Color.FromArgb(0x10, 0x10, 0x10);
+        private int _padLeft = 14;
+        private int _padTop = 14;
+        private int _lineGap = 6;
+        private TextEffectKind _textEffect = TextEffectKind.None;
         private readonly Func<int> _getPositionMs;
         private readonly TextFormatFlags _textFlags =
             TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPadding |
@@ -66,10 +69,15 @@ namespace MusicBeePlugin
                 return;
             }
 
+            settings.Normalize();
             BackColor = settings.BackColor;
             _textColor = settings.TextColor;
             _dimTextColor = BlendToward(settings.TextColor, settings.BackColor, 0.55f);
-            _padding = Math.Max(0, Math.Min(48, settings.PaddingPx));
+            _effectColor = BlendToward(settings.BackColor, Color.Black, 0.75f);
+            _padLeft = settings.PaddingLeftPx;
+            _padTop = settings.PaddingTopPx;
+            _lineGap = settings.LineSpacingPx;
+            _textEffect = settings.TextEffect;
             _startDelayMs = Math.Max(0, settings.StartDelayMs);
 
             Font old = _font;
@@ -172,6 +180,19 @@ namespace MusicBeePlugin
             return Color.FromArgb(r, g, b);
         }
 
+        private int TextWidth => Math.Max(Width - _padLeft * 2, 1);
+
+        /// <summary>Viewport below the fixed top padding (margin does not scroll away).</summary>
+        private int ContentHeight => Math.Max(Height - _padTop, 1);
+
+        private float MaxScrollY =>
+            Math.Max(_totalTextHeight - ContentHeight, 0f);
+
+        private void SetContentClip(Graphics g)
+        {
+            g.SetClip(new Rectangle(0, _padTop, Math.Max(Width, 1), ContentHeight));
+        }
+
         private void MeasureLayout()
         {
             if (_syncedMode)
@@ -185,16 +206,27 @@ namespace MusicBeePlugin
             if (!IsHandleCreated || Width <= 0 || string.IsNullOrEmpty(_lyrics) || _font == null)
                 return;
 
-            int textWidth = Math.Max(Width - (_padding * 2), 1);
-
+            int textWidth = TextWidth;
             try
             {
-                Size size = TextRenderer.MeasureText(
-                    _lyrics,
-                    _font,
-                    new Size(textWidth, MaxLayoutHeight),
-                    _textFlags);
-                _totalTextHeight = Math.Min(size.Height, MaxLayoutHeight);
+                // Split on newlines so LineSpacingPx applies between paragraphs/lines.
+                string[] lines = _lyrics.Split('\n');
+                int y = 0;
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string line = string.IsNullOrEmpty(lines[i]) ? " " : lines[i];
+                    Size size = TextRenderer.MeasureText(
+                        line,
+                        _font,
+                        new Size(textWidth, MaxLayoutHeight),
+                        _textFlags);
+                    y += Math.Max(size.Height, _font.Height);
+                    if (i < lines.Length - 1)
+                        y += _lineGap;
+                    if (y > MaxLayoutHeight)
+                        break;
+                }
+                _totalTextHeight = Math.Min(y, MaxLayoutHeight);
             }
             catch (Exception)
             {
@@ -207,7 +239,7 @@ namespace MusicBeePlugin
             if (!IsHandleCreated || Width <= 0 || _font == null || _syncedLines.Count == 0)
                 return;
 
-            int textWidth = Math.Max(Width - (_padding * 2), 1);
+            int textWidth = TextWidth;
             int count = _syncedLines.Count;
             _lineTops = new int[count];
             _lineHeights = new int[count];
@@ -230,13 +262,10 @@ namespace MusicBeePlugin
                     int h = Math.Max(size.Height, _font.Height);
                     _lineTops[i] = y;
                     _lineHeights[i] = h;
-                    y += h + SyncedLineGap;
+                    y += h + _lineGap;
 
                     if (y > MaxLayoutHeight)
-                    {
-                        // Truncate layout if absurdly long — still keep measured lines so far.
                         break;
-                    }
                 }
             }
             catch (Exception)
@@ -244,7 +273,7 @@ namespace MusicBeePlugin
                 y = Height;
             }
 
-            _totalTextHeight = y > 0 ? y - SyncedLineGap : 0;
+            _totalTextHeight = y > 0 ? Math.Max(y - _lineGap, 0) : 0;
         }
 
         private void OnScrollTick(object sender, EventArgs e)
@@ -268,8 +297,7 @@ namespace MusicBeePlugin
 
         private void SyncPlainFromPosition()
         {
-            float maxScroll = Math.Max(_totalTextHeight - Height + _padding * 2, 0f);
-            float next = ScrollMath.ScrollY(_getPositionMs(), _durationMs, _startDelayMs, maxScroll);
+            float next = ScrollMath.ScrollY(_getPositionMs(), _durationMs, _startDelayMs, MaxScrollY);
 
             if ((int)next == (int)_scrollY)
             {
@@ -283,17 +311,17 @@ namespace MusicBeePlugin
 
         private void SyncSyncedFromPosition()
         {
-            // Timestamps are absolute — start delay does not apply in synced mode.
             int positionMs = _getPositionMs();
             int nextActive = LrcParser.ActiveIndex(_syncedLines, positionMs);
 
-            float maxScroll = Math.Max(_totalTextHeight - Height + _padding * 2, 0f);
+            float maxScroll = MaxScrollY;
             float nextScroll = 0f;
 
             if (nextActive >= 0 && nextActive < _lineTops.Length)
             {
+                // Center within the content viewport (below fixed top padding).
                 float lineCenter = _lineTops[nextActive] + (_lineHeights[nextActive] / 2f);
-                nextScroll = lineCenter - (Height / 2f) + _padding;
+                nextScroll = lineCenter - (ContentHeight / 2f);
                 if (nextScroll < 0f) nextScroll = 0f;
                 if (nextScroll > maxScroll) nextScroll = maxScroll;
             }
@@ -304,6 +332,32 @@ namespace MusicBeePlugin
 
             if (changed)
                 Invalidate();
+        }
+
+        private void DrawStyledText(Graphics g, string text, Rectangle rect, Color color)
+        {
+            if (_textEffect == TextEffectKind.Shadow)
+            {
+                Rectangle shadow = rect;
+                shadow.Offset(2, 2);
+                TextRenderer.DrawText(g, text, _font, shadow, _effectColor, _textFlags);
+            }
+            else if (_textEffect == TextEffectKind.Outline)
+            {
+                for (int dx = -1; dx <= 1; dx++)
+                {
+                    for (int dy = -1; dy <= 1; dy++)
+                    {
+                        if (dx == 0 && dy == 0)
+                            continue;
+                        Rectangle outline = rect;
+                        outline.Offset(dx, dy);
+                        TextRenderer.DrawText(g, text, _font, outline, _effectColor, _textFlags);
+                    }
+                }
+            }
+
+            TextRenderer.DrawText(g, text, _font, rect, color, _textFlags);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -322,26 +376,41 @@ namespace MusicBeePlugin
             if (string.IsNullOrEmpty(_lyrics))
                 return;
 
-            int textWidth = Width - (_padding * 2);
+            PaintPlain(e.Graphics);
+        }
+
+        private void PaintPlain(Graphics g)
+        {
+            int textWidth = TextWidth;
             if (textWidth < 1)
                 return;
 
-            int layoutHeight = (int)Math.Min(
-                Math.Max(_totalTextHeight + _padding, Height),
-                MaxLayoutHeight);
-            if (layoutHeight < 1)
-                layoutHeight = Height;
-
-            Rectangle textRect = new Rectangle(
-                _padding,
-                _padding - (int)_scrollY,
-                textWidth,
-                layoutHeight);
-
             try
             {
-                e.Graphics.SetClip(ClientRectangle);
-                TextRenderer.DrawText(e.Graphics, _lyrics, _font, textRect, _textColor, _textFlags);
+                SetContentClip(g);
+                string[] lines = _lyrics.Split('\n');
+                int y = _padTop - (int)_scrollY;
+
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    string line = string.IsNullOrEmpty(lines[i]) ? " " : lines[i];
+                    Size size = TextRenderer.MeasureText(
+                        line,
+                        _font,
+                        new Size(textWidth, MaxLayoutHeight),
+                        _textFlags);
+                    int h = Math.Max(size.Height, _font.Height);
+
+                    if (y + h >= _padTop && y <= Height)
+                    {
+                        Rectangle rect = new Rectangle(_padLeft, y, textWidth, h);
+                        DrawStyledText(g, line, rect, _textColor);
+                    }
+
+                    y += h + _lineGap;
+                    if (y > Height + 200)
+                        break;
+                }
             }
             catch (Exception)
             {
@@ -351,13 +420,13 @@ namespace MusicBeePlugin
 
         private void PaintSynced(Graphics g)
         {
-            int textWidth = Width - (_padding * 2);
+            int textWidth = TextWidth;
             if (textWidth < 1 || _lineTops.Length == 0)
                 return;
 
             try
             {
-                g.SetClip(ClientRectangle);
+                SetContentClip(g);
 
                 for (int i = 0; i < _syncedLines.Count && i < _lineTops.Length; i++)
                 {
@@ -365,16 +434,15 @@ namespace MusicBeePlugin
                     if (string.IsNullOrWhiteSpace(text))
                         continue;
 
-                    int top = _padding + _lineTops[i] - (int)_scrollY;
+                    int top = _padTop + _lineTops[i] - (int)_scrollY;
                     int h = _lineHeights[i];
 
-                    // Skip lines fully outside the viewport.
-                    if (top + h < 0 || top > Height)
+                    if (top + h < _padTop || top > Height)
                         continue;
 
-                    Rectangle rect = new Rectangle(_padding, top, textWidth, h);
+                    Rectangle rect = new Rectangle(_padLeft, top, textWidth, h);
                     Color color = i == _activeIndex ? _textColor : _dimTextColor;
-                    TextRenderer.DrawText(g, text, _font, rect, color, _textFlags);
+                    DrawStyledText(g, text, rect, color);
                 }
             }
             catch (Exception)

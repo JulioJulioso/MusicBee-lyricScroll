@@ -6,7 +6,7 @@ MusicBee panel plugin that shows lyrics and scrolls with playback. When synced L
 - Dockable **LyricScroll** panel
 - **Synced mode**: line highlight from LRC timestamps (LRCLIB `syncedLyrics` preferred)
 - **Plain mode**: scroll follows player position (seek / pause stay in sync)
-- **Right-click menu**: switch source (MusicBee / LRCLIB), reload, copy, open LRCLIB, appearance
+- **Right-click menu**: switch source, reload, copy, open LRCLIB, full **Settings** (start delay + look), About
 - Optional **start delay** for plain mode only (synced timestamps are absolute)
 - Custom **colors**, **font**, and **padding**
 - Lyrics waterfall: MusicBee → LRCLIB (instrumental / synced / plain)
@@ -65,12 +65,14 @@ After updating from an older build that used a fixed panel height, **remove** Ly
 |--------|---------|
 | Start delay (seconds) | Plain mode only: hold lyrics at the top for N seconds, then scroll (delay is not subtracted from song duration) |
 | Prefer synced lines | Prefer LRCLIB (or local) LRC with timestamps over plain MusicBee text |
-| Padding | Space around the lyrics text |
+| Padding left / top | Horizontal and vertical inset around the lyrics |
+| Line spacing | Extra space between lyric lines |
+| Text effect | None, soft shadow, or outline (contour) |
 | Background / Text | Panel colors |
 | Font | Typeface, size, and bold |
-| Reset look | Restores default colors/font/padding (keeps start delay and synced preference) |
+| Reset look | Restores default colors/font/padding/spacing/effect (keeps start delay and synced preference) |
 
-**Right-click the lyrics panel** for the same appearance dialog, plus source overrides when the wrong song’s lyrics appear.
+**Right-click the lyrics panel** for source overrides, **Settings** (start delay, synced preference, colors/font), and **About**.
 
 Settings are stored under MusicBee’s persistent storage path as `LyricScroll.settings.json` (older installs may still have `LyricScroll_startDelayMs.txt`, which is migrated automatically).
 

@@ -28,16 +28,16 @@ namespace MusicBeePlugin
             _about.PluginInfoVersion        = PluginInfoVersion;
             _about.Name                     = "LyricScroll";
             _about.Description              = "Auto-scrolling lyrics panel for MusicBee";
-            _about.Author                   = "JulioJulioso";
+            _about.Author                   = "Julio Rodríguez";
             _about.TargetApplication        = "LyricScroll";
             _about.Type                     = PluginType.PanelView;
             _about.VersionMajor             = 1;
-            _about.VersionMinor             = 3;
-            _about.Revision                 = 3;
+            _about.VersionMinor             = 4;
+            _about.Revision                 = 1;
             _about.MinInterfaceVersion      = MinInterfaceVersion;
             _about.MinApiRevision           = MinApiRevision;
             _about.ReceiveNotifications     = ReceiveNotificationFlags.PlayerEvents;
-            _about.ConfigurationPanelHeight = 200;
+            _about.ConfigurationPanelHeight = 280;
 
             return _about;
         }
@@ -168,7 +168,9 @@ namespace MusicBeePlugin
             };
             preferSynced.CheckedChanged += preferHandler;
             menu.Items.Add(preferSynced);
-            menu.Items.Add("Appearance…", null, (s, e) => ShowAppearanceDialog());
+            menu.Items.Add("Settings…", null, (s, e) => ShowSettingsDialog());
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("About LyricScroll…", null, (s, e) => ShowAboutDialog());
 
             menu.Opening += (s, e) =>
             {
@@ -208,57 +210,211 @@ namespace MusicBeePlugin
             catch { /* ignore */ }
         }
 
-        private void ShowAppearanceDialog()
+        private void OpenGitHub()
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "https://github.com/JulioJulioso",
+                    UseShellExecute = true
+                });
+            }
+            catch { /* ignore */ }
+        }
+
+        private string VersionString() =>
+            _about.VersionMajor + "." + _about.VersionMinor + "." + _about.Revision;
+
+        private void ShowAboutDialog()
         {
             using (var form = new Form())
             {
-                form.Text = "LyricScroll — Appearance";
+                form.Text = "About LyricScroll";
                 form.FormBorderStyle = FormBorderStyle.FixedDialog;
                 form.MaximizeBox = false;
                 form.MinimizeBox = false;
                 form.StartPosition = FormStartPosition.CenterParent;
-                form.ClientSize = new Size(320, 200);
+                form.ClientSize = new Size(340, 168);
+                form.ShowInTaskbar = false;
+
+                var titleFont = new Font(form.Font.FontFamily, 12f, FontStyle.Bold);
+                var title = new Label
+                {
+                    Text = "LyricScroll",
+                    Font = titleFont,
+                    AutoSize = true,
+                    Left = 16,
+                    Top = 16
+                };
+                form.FormClosed += (s, e) => titleFont.Dispose();
+                var version = new Label
+                {
+                    Text = "Version " + VersionString(),
+                    AutoSize = true,
+                    Left = 16,
+                    Top = 44
+                };
+                var author = new Label
+                {
+                    Text = "Author: Julio Rodríguez",
+                    AutoSize = true,
+                    Left = 16,
+                    Top = 68
+                };
+                var github = new LinkLabel
+                {
+                    Text = "GitHub: JulioJulioso",
+                    AutoSize = true,
+                    Left = 16,
+                    Top = 92
+                };
+                github.LinkClicked += (s, e) => OpenGitHub();
+
+                var ok = new Button
+                {
+                    Text = "OK",
+                    Left = 240,
+                    Top = 126,
+                    Width = 80,
+                    Height = 26,
+                    DialogResult = DialogResult.OK
+                };
+
+                form.Controls.Add(title);
+                form.Controls.Add(version);
+                form.Controls.Add(author);
+                form.Controls.Add(github);
+                form.Controls.Add(ok);
+                form.AcceptButton = ok;
+                ShowOwnedDialog(form);
+            }
+        }
+
+        private void ShowSettingsDialog()
+        {
+            using (var form = new Form())
+            {
+                form.Text = "LyricScroll — Settings";
+                form.FormBorderStyle = FormBorderStyle.FixedDialog;
+                form.MaximizeBox = false;
+                form.MinimizeBox = false;
+                form.StartPosition = FormStartPosition.CenterParent;
+                form.ClientSize = new Size(340, 360);
                 form.ShowInTaskbar = false;
 
                 int y = 12;
-                Label padLabel = new Label { Text = "Padding (px):", AutoSize = true, Left = 12, Top = y + 3 };
-                NumericUpDown padUpDown = new NumericUpDown
+
+                Label delayLabel = new Label
+                {
+                    Text = "Start delay (seconds):",
+                    AutoSize = true,
+                    Left = 12,
+                    Top = y + 3
+                };
+                NumericUpDown delayUpDown = new NumericUpDown
                 {
                     Minimum = 0,
-                    Maximum = 48,
-                    Value = Math.Min(48, Math.Max(0, _settings.PaddingPx)),
-                    Left = 140,
+                    Maximum = 600,
+                    Value = Math.Min(600, Math.Max(0, _settings.StartDelayMs / 1000)),
+                    Left = 190,
                     Top = y,
                     Width = 70
                 };
-                y += 36;
+                delayUpDown.ValueChanged += (s, e) =>
+                {
+                    _settings.StartDelayMs = (int)delayUpDown.Value * 1000;
+                    ApplySettingsToPanel();
+                };
+                y += 28;
+
+                CheckBox syncedCheck = new CheckBox
+                {
+                    Text = "Prefer synced lines (LRCLIB LRC)",
+                    AutoSize = true,
+                    Left = 12,
+                    Top = y,
+                    Checked = _settings.PreferSyncedLines
+                };
+                syncedCheck.CheckedChanged += (s, e) =>
+                {
+                    _settings.PreferSyncedLines = syncedCheck.Checked;
+                    FetchLyrics(_fetchMode);
+                };
+                y += 28;
+
+                Label padLeftLabel = new Label { Text = "Padding left (px):", AutoSize = true, Left = 12, Top = y + 3 };
+                NumericUpDown padLeftUp = MakePadUpDown(_settings.PaddingLeftPx, 190, y);
+                padLeftUp.ValueChanged += (s, e) =>
+                {
+                    _settings.PaddingLeftPx = (int)padLeftUp.Value;
+                    ApplySettingsToPanel();
+                };
+                y += 28;
+
+                Label padTopLabel = new Label { Text = "Padding top (px):", AutoSize = true, Left = 12, Top = y + 3 };
+                NumericUpDown padTopUp = MakePadUpDown(_settings.PaddingTopPx, 190, y);
+                padTopUp.ValueChanged += (s, e) =>
+                {
+                    _settings.PaddingTopPx = (int)padTopUp.Value;
+                    ApplySettingsToPanel();
+                };
+                y += 28;
+
+                Label gapLabel = new Label { Text = "Line spacing (px):", AutoSize = true, Left = 12, Top = y + 3 };
+                NumericUpDown gapUp = new NumericUpDown
+                {
+                    Minimum = 0,
+                    Maximum = 32,
+                    Value = Math.Min(32, Math.Max(0, _settings.LineSpacingPx)),
+                    Left = 190,
+                    Top = y,
+                    Width = 70
+                };
+                gapUp.ValueChanged += (s, e) =>
+                {
+                    _settings.LineSpacingPx = (int)gapUp.Value;
+                    ApplySettingsToPanel();
+                };
+                y += 28;
+
+                Label effectLabel = new Label { Text = "Text effect:", AutoSize = true, Left = 12, Top = y + 3 };
+                ComboBox effectCombo = new ComboBox
+                {
+                    DropDownStyle = ComboBoxStyle.DropDownList,
+                    Left = 120,
+                    Top = y,
+                    Width = 140
+                };
+                effectCombo.Items.AddRange(new object[] { "None", "Shadow", "Outline" });
+                effectCombo.SelectedIndex = Math.Min(2, Math.Max(0, (int)_settings.TextEffect));
+                effectCombo.SelectedIndexChanged += (s, e) =>
+                {
+                    _settings.TextEffect = (TextEffectKind)effectCombo.SelectedIndex;
+                    ApplySettingsToPanel();
+                };
+                y += 34;
 
                 Button backBtn = MakeColorButton("Background…", _settings.BackColor, 12, y);
                 backBtn.Click += (s, e) =>
                 {
-                    using (var dlg = new ColorDialog { Color = _settings.BackColor, FullOpen = true })
-                    {
-                        if (dlg.ShowDialog(form) != DialogResult.OK)
-                            return;
-                        _settings.BackColorHex = PluginSettings.ToHex(dlg.Color);
-                        backBtn.BackColor = dlg.Color;
-                        backBtn.ForeColor = ContrastText(dlg.Color);
-                        ApplySettingsToPanel();
-                    }
+                    if (!TryPickColor(form, _settings.BackColor, out Color picked))
+                        return;
+                    _settings.BackColorHex = PluginSettings.ToHex(picked);
+                    backBtn.BackColor = picked;
+                    backBtn.ForeColor = ContrastText(picked);
+                    ApplySettingsToPanel();
                 };
 
-                Button textBtn = MakeColorButton("Text…", _settings.TextColor, 150, y);
+                Button textBtn = MakeColorButton("Text…", _settings.TextColor, 160, y);
                 textBtn.Click += (s, e) =>
                 {
-                    using (var dlg = new ColorDialog { Color = _settings.TextColor, FullOpen = true })
-                    {
-                        if (dlg.ShowDialog(form) != DialogResult.OK)
-                            return;
-                        _settings.TextColorHex = PluginSettings.ToHex(dlg.Color);
-                        textBtn.BackColor = dlg.Color;
-                        textBtn.ForeColor = ContrastText(dlg.Color);
-                        ApplySettingsToPanel();
-                    }
+                    if (!TryPickColor(form, _settings.TextColor, out Color picked))
+                        return;
+                    _settings.TextColorHex = PluginSettings.ToHex(picked);
+                    textBtn.BackColor = picked;
+                    textBtn.ForeColor = ContrastText(picked);
+                    ApplySettingsToPanel();
                 };
                 y += 36;
 
@@ -267,7 +423,7 @@ namespace MusicBeePlugin
                     Text = "Font: " + _settings.FontFamily + " " + _settings.FontSizePt.ToString("0.#") + "pt",
                     Left = 12,
                     Top = y,
-                    Width = 280,
+                    Width = 300,
                     Height = 28
                 };
                 fontBtn.Click += (s, e) =>
@@ -296,7 +452,10 @@ namespace MusicBeePlugin
                         StartDelayMs = delay,
                         PreferSyncedLines = preferSynced
                     };
-                    padUpDown.Value = _settings.PaddingPx;
+                    padLeftUp.Value = _settings.PaddingLeftPx;
+                    padTopUp.Value = _settings.PaddingTopPx;
+                    gapUp.Value = _settings.LineSpacingPx;
+                    effectCombo.SelectedIndex = (int)_settings.TextEffect;
                     backBtn.BackColor = _settings.BackColor;
                     backBtn.ForeColor = ContrastText(_settings.BackColor);
                     textBtn.BackColor = _settings.TextColor;
@@ -308,21 +467,24 @@ namespace MusicBeePlugin
                 Button okBtn = new Button
                 {
                     Text = "OK",
-                    Left = 210,
+                    Left = 230,
                     Top = y,
                     Width = 80,
                     Height = 26,
                     DialogResult = DialogResult.OK
                 };
 
-                padUpDown.ValueChanged += (s, e) =>
-                {
-                    _settings.PaddingPx = (int)padUpDown.Value;
-                    ApplySettingsToPanel();
-                };
-
-                form.Controls.Add(padLabel);
-                form.Controls.Add(padUpDown);
+                form.Controls.Add(delayLabel);
+                form.Controls.Add(delayUpDown);
+                form.Controls.Add(syncedCheck);
+                form.Controls.Add(padLeftLabel);
+                form.Controls.Add(padLeftUp);
+                form.Controls.Add(padTopLabel);
+                form.Controls.Add(padTopUp);
+                form.Controls.Add(gapLabel);
+                form.Controls.Add(gapUp);
+                form.Controls.Add(effectLabel);
+                form.Controls.Add(effectCombo);
                 form.Controls.Add(backBtn);
                 form.Controls.Add(textBtn);
                 form.Controls.Add(fontBtn);
@@ -336,18 +498,59 @@ namespace MusicBeePlugin
                     ApplySettingsToPanel();
                 };
 
-                try
-                {
-                    Control owner = _hostPanel ?? (Control)_lyricsPanel;
-                    if (owner != null && !owner.IsDisposed)
-                        form.ShowDialog(owner.FindForm() ?? owner);
-                    else
-                        form.ShowDialog();
-                }
-                catch
-                {
+                ShowOwnedDialog(form);
+            }
+        }
+
+        private static NumericUpDown MakePadUpDown(int value, int left, int top)
+        {
+            return new NumericUpDown
+            {
+                Minimum = 0,
+                Maximum = 64,
+                Value = Math.Min(64, Math.Max(0, value)),
+                Left = left,
+                Top = top,
+                Width = 70
+            };
+        }
+
+        private bool TryPickColor(IWin32Window owner, Color current, out Color picked)
+        {
+            picked = current;
+            using (var dlg = new ColorDialog
+            {
+                Color = current,
+                FullOpen = true,
+                AnyColor = true,
+                SolidColorOnly = false,
+                CustomColors = PluginSettings.NormalizeCustomColors(_settings.CustomColors)
+            })
+            {
+                DialogResult result = owner != null ? dlg.ShowDialog(owner) : dlg.ShowDialog();
+                if (result != DialogResult.OK)
+                    return false;
+
+                picked = dlg.Color;
+                _settings.CustomColors = PluginSettings.NormalizeCustomColors(dlg.CustomColors);
+                _settings.Save(PersistentDir());
+                return true;
+            }
+        }
+
+        private void ShowOwnedDialog(Form form)
+        {
+            try
+            {
+                Control owner = _hostPanel ?? (Control)_lyricsPanel;
+                if (owner != null && !owner.IsDisposed)
+                    form.ShowDialog(owner.FindForm() ?? owner);
+                else
                     form.ShowDialog();
-                }
+            }
+            catch
+            {
+                form.ShowDialog();
             }
         }
 
@@ -585,55 +788,102 @@ namespace MusicBeePlugin
             };
             y += 28;
 
-            Label padLabel = new Label
+            Label padLeftLabel = new Label
             {
-                Text = "Padding (px):",
+                Text = "Padding left (px):",
                 AutoSize = true,
                 Left = 8,
                 Top = y + 3
             };
-            NumericUpDown padUpDown = new NumericUpDown
+            NumericUpDown padLeftUp = MakePadUpDown(_settings.PaddingLeftPx, 170, y);
+            padLeftUp.ValueChanged += (s, e) =>
+            {
+                _settings.PaddingLeftPx = (int)padLeftUp.Value;
+                ApplySettingsToPanel();
+            };
+            y += 28;
+
+            Label padTopLabel = new Label
+            {
+                Text = "Padding top (px):",
+                AutoSize = true,
+                Left = 8,
+                Top = y + 3
+            };
+            NumericUpDown padTopUp = MakePadUpDown(_settings.PaddingTopPx, 170, y);
+            padTopUp.ValueChanged += (s, e) =>
+            {
+                _settings.PaddingTopPx = (int)padTopUp.Value;
+                ApplySettingsToPanel();
+            };
+            y += 28;
+
+            Label gapLabel = new Label
+            {
+                Text = "Line spacing (px):",
+                AutoSize = true,
+                Left = 8,
+                Top = y + 3
+            };
+            NumericUpDown gapUp = new NumericUpDown
             {
                 Minimum = 0,
-                Maximum = 48,
-                Value = Math.Min(48, Math.Max(0, _settings.PaddingPx)),
+                Maximum = 32,
+                Value = Math.Min(32, Math.Max(0, _settings.LineSpacingPx)),
                 Left = 170,
                 Top = y,
                 Width = 70
             };
-            padUpDown.ValueChanged += (s, e) =>
+            gapUp.ValueChanged += (s, e) =>
             {
-                _settings.PaddingPx = (int)padUpDown.Value;
+                _settings.LineSpacingPx = (int)gapUp.Value;
                 ApplySettingsToPanel();
             };
-            y += 36;
+            y += 28;
+
+            Label effectLabel = new Label
+            {
+                Text = "Text effect:",
+                AutoSize = true,
+                Left = 8,
+                Top = y + 3
+            };
+            ComboBox effectCombo = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Left = 110,
+                Top = y,
+                Width = 130
+            };
+            effectCombo.Items.AddRange(new object[] { "None", "Shadow", "Outline" });
+            effectCombo.SelectedIndex = Math.Min(2, Math.Max(0, (int)_settings.TextEffect));
+            effectCombo.SelectedIndexChanged += (s, e) =>
+            {
+                _settings.TextEffect = (TextEffectKind)effectCombo.SelectedIndex;
+                ApplySettingsToPanel();
+            };
+            y += 32;
 
             Button backBtn = MakeColorButton("Background…", _settings.BackColor, 8, y);
             backBtn.Click += (s, e) =>
             {
-                using (var dlg = new ColorDialog { Color = _settings.BackColor, FullOpen = true })
-                {
-                    if (dlg.ShowDialog() != DialogResult.OK)
-                        return;
-                    _settings.BackColorHex = PluginSettings.ToHex(dlg.Color);
-                    backBtn.BackColor = dlg.Color;
-                    backBtn.ForeColor = ContrastText(dlg.Color);
-                    ApplySettingsToPanel();
-                }
+                if (!TryPickColor(null, _settings.BackColor, out Color picked))
+                    return;
+                _settings.BackColorHex = PluginSettings.ToHex(picked);
+                backBtn.BackColor = picked;
+                backBtn.ForeColor = ContrastText(picked);
+                ApplySettingsToPanel();
             };
 
             Button textBtn = MakeColorButton("Text…", _settings.TextColor, 150, y);
             textBtn.Click += (s, e) =>
             {
-                using (var dlg = new ColorDialog { Color = _settings.TextColor, FullOpen = true })
-                {
-                    if (dlg.ShowDialog() != DialogResult.OK)
-                        return;
-                    _settings.TextColorHex = PluginSettings.ToHex(dlg.Color);
-                    textBtn.BackColor = dlg.Color;
-                    textBtn.ForeColor = ContrastText(dlg.Color);
-                    ApplySettingsToPanel();
-                }
+                if (!TryPickColor(null, _settings.TextColor, out Color picked))
+                    return;
+                _settings.TextColorHex = PluginSettings.ToHex(picked);
+                textBtn.BackColor = picked;
+                textBtn.ForeColor = ContrastText(picked);
+                ApplySettingsToPanel();
             };
             y += 36;
 
@@ -680,7 +930,10 @@ namespace MusicBeePlugin
                 };
                 delayUpDown.Value = Math.Min(600, Math.Max(0, delay / 1000));
                 syncedCheck.Checked = preferSynced;
-                padUpDown.Value = _settings.PaddingPx;
+                padLeftUp.Value = _settings.PaddingLeftPx;
+                padTopUp.Value = _settings.PaddingTopPx;
+                gapUp.Value = _settings.LineSpacingPx;
+                effectCombo.SelectedIndex = (int)_settings.TextEffect;
                 backBtn.BackColor = _settings.BackColor;
                 backBtn.ForeColor = ContrastText(_settings.BackColor);
                 textBtn.BackColor = _settings.TextColor;
@@ -692,8 +945,14 @@ namespace MusicBeePlugin
             panel.Controls.Add(delayLabel);
             panel.Controls.Add(delayUpDown);
             panel.Controls.Add(syncedCheck);
-            panel.Controls.Add(padLabel);
-            panel.Controls.Add(padUpDown);
+            panel.Controls.Add(padLeftLabel);
+            panel.Controls.Add(padLeftUp);
+            panel.Controls.Add(padTopLabel);
+            panel.Controls.Add(padTopUp);
+            panel.Controls.Add(gapLabel);
+            panel.Controls.Add(gapUp);
+            panel.Controls.Add(effectLabel);
+            panel.Controls.Add(effectCombo);
             panel.Controls.Add(backBtn);
             panel.Controls.Add(textBtn);
             panel.Controls.Add(fontBtn);
