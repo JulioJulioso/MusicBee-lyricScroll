@@ -16,6 +16,7 @@ namespace MusicBeePlugin
         private const int SyncedLineGap = 6;
 
         private string _lyrics = string.Empty;
+        private string _sourceLabel = string.Empty;
         private IReadOnlyList<LrcLine> _syncedLines = Array.Empty<LrcLine>();
         private int[] _lineTops = Array.Empty<int>();
         private int[] _lineHeights = Array.Empty<int>();
@@ -103,6 +104,7 @@ namespace MusicBeePlugin
             _lineTops = Array.Empty<int>();
             _lineHeights = Array.Empty<int>();
             _syncedMode = false;
+            _sourceLabel = result?.SourceLabel ?? string.Empty;
 
             if (result == null || result.IsEmpty)
             {
@@ -142,6 +144,10 @@ namespace MusicBeePlugin
             Invalidate();
             _scrollTimer.Start();
         }
+
+        public string CopyText => _lyrics ?? string.Empty;
+
+        public string SourceLabel => _sourceLabel ?? string.Empty;
 
         public void SetPlayState(bool isPlaying)
         {

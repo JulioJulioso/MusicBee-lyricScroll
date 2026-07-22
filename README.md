@@ -6,11 +6,13 @@ MusicBee panel plugin that shows lyrics and scrolls with playback. When synced L
 - Dockable **LyricScroll** panel
 - **Synced mode**: line highlight from LRC timestamps (LRCLIB `syncedLyrics` preferred)
 - **Plain mode**: scroll follows player position (seek / pause stay in sync)
+- **Right-click menu**: switch source (MusicBee / LRCLIB), reload, copy, open LRCLIB, appearance
 - Optional **start delay** for plain mode only (synced timestamps are absolute)
 - Custom **colors**, **font**, and **padding**
 - Lyrics waterfall: MusicBee → LRCLIB (instrumental / synced / plain)
 - Instrumental / OST tracks show **Instrumental** instead of wrong scraped text
 - Artist names like `Bob Dylan (Rare)` are cleaned for online lookup
+- Titles like `02. Song [Producido por X]` drop track numbers and bracket suffixes for LRCLIB
 
 ---
 
@@ -68,20 +70,25 @@ After updating from an older build that used a fixed panel height, **remove** Ly
 | Font | Typeface, size, and bold |
 | Reset look | Restores default colors/font/padding (keeps start delay and synced preference) |
 
+**Right-click the lyrics panel** for the same appearance dialog, plus source overrides when the wrong song’s lyrics appear.
+
 Settings are stored under MusicBee’s persistent storage path as `LyricScroll.settings.json` (older installs may still have `LyricScroll_startDelayMs.txt`, which is migrated automatically).
 
 ---
 
 ## How lyrics are chosen
 
-With **Prefer synced lines** on (default):
+With **Prefer synced lines** on (default) and fetch mode **Auto**:
 
 1. LRCLIB `instrumental` wins over bad local tags (common on OST/score tracks)
-2. LRCLIB **synced** LRC
+2. LRCLIB **synced** LRC (search requires artist + title match; duration is soft — vinyl rips often differ from ±2s `/api/get`)
 3. Local LRC (MusicBee / tag) if it parses
 4. Local plain lyrics
 5. LRCLIB plain lyrics
-6. Otherwise: `No lyrics found.` or `Instrumental` (OST heuristic)
+6. Trimmed Letras.com scrape only as last resort (full page dumps are rejected)
+7. Otherwise: `No lyrics found.` or `Instrumental` (OST heuristic)
+
+If lyrics are wrong: right-click → **Use MusicBee lyrics** or **Use LRCLIB**, or **Open LRCLIB in browser**. The override lasts until the next track (then Auto again).
 
 Musixmatch is not used (commercial / licensing). Spotify and Tidal public APIs do not expose usable synced lyrics to third parties.
 

@@ -73,16 +73,16 @@ namespace MusicBeePlugin
             return lines;
         }
 
-        public static LyricsResult TryParseResult(string text)
+        public static LyricsResult TryParseResult(string text, LyricsSource source = LyricsSource.Local)
         {
             if (!LooksLikeLrc(text))
-                return LyricsResult.FromPlain(text);
+                return LyricsResult.FromPlain(text, source);
 
             IReadOnlyList<LrcLine> lines = Parse(text);
             if (lines.Count < 2)
-                return LyricsResult.FromPlain(_timeTag.Replace(text ?? "", "").Trim());
+                return LyricsResult.FromPlain(_timeTag.Replace(text ?? "", "").Trim(), source);
 
-            return LyricsResult.FromSynced(lines, plainFallback: null);
+            return LyricsResult.FromSynced(lines, plainFallback: null, source);
         }
 
         /// <summary>
