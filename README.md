@@ -1,12 +1,14 @@
 # LyricScroll (MB_LyricScroll)
 
-MusicBee panel plugin that shows plain lyrics and scrolls them gently with playback. Not karaoke — no line highlighting.
+MusicBee panel plugin that shows lyrics and scrolls with playback. When synced LRC is available (usually from LRCLIB), the **active line is highlighted** and kept near the center. Otherwise it falls back to gentle plain-text autoscroll.
 
 **Features**
 - Dockable **LyricScroll** panel
-- Scroll follows the player position (seek / pause stay in sync)
-- Optional **start delay** (seconds) before scrolling begins
-- Lyrics from MusicBee first, then [LRCLIB](https://lrclib.net/)
+- **Synced mode**: line highlight from LRC timestamps (LRCLIB `syncedLyrics` preferred)
+- **Plain mode**: scroll follows player position (seek / pause stay in sync)
+- Optional **start delay** for plain mode only (synced timestamps are absolute)
+- Custom **colors**, **font**, and **padding**
+- Lyrics waterfall: MusicBee → LRCLIB (instrumental / synced / plain)
 - Instrumental / OST tracks show **Instrumental** instead of wrong scraped text
 - Artist names like `Bob Dylan (Rare)` are cleaned for online lookup
 
@@ -59,24 +61,36 @@ After updating from an older build that used a fixed panel height, **remove** Ly
 
 | Setting | Meaning |
 |--------|---------|
-| Start delay (seconds) | Hold lyrics at the top for N seconds, then scroll at the normal rate (delay is not subtracted from song duration) |
+| Start delay (seconds) | Plain mode only: hold lyrics at the top for N seconds, then scroll (delay is not subtracted from song duration) |
+| Prefer synced lines | Prefer LRCLIB (or local) LRC with timestamps over plain MusicBee text |
+| Padding | Space around the lyrics text |
+| Background / Text | Panel colors |
+| Font | Typeface, size, and bold |
+| Reset look | Restores default colors/font/padding (keeps start delay and synced preference) |
 
-Settings are stored under MusicBee’s persistent storage path as `LyricScroll_startDelayMs.txt`.
+Settings are stored under MusicBee’s persistent storage path as `LyricScroll.settings.json` (older installs may still have `LyricScroll_startDelayMs.txt`, which is migrated automatically).
 
 ---
 
 ## How lyrics are chosen
 
-1. MusicBee now-playing lyrics / downloaded lyrics / Lyrics tag  
-2. LRCLIB (`instrumental` wins over bad local text on OST tracks)  
-3. Otherwise: `No lyrics found.` or `Instrumental`
+With **Prefer synced lines** on (default):
+
+1. LRCLIB `instrumental` wins over bad local tags (common on OST/score tracks)
+2. LRCLIB **synced** LRC
+3. Local LRC (MusicBee / tag) if it parses
+4. Local plain lyrics
+5. LRCLIB plain lyrics
+6. Otherwise: `No lyrics found.` or `Instrumental` (OST heuristic)
+
+Musixmatch is not used (commercial / licensing). Spotify and Tidal public APIs do not expose usable synced lyrics to third parties.
 
 ---
 
 ## Development notes
 
 - Target: `net48`, `x86` (matches classic MusicBee).
-- Debug builds run small `Debug.Assert` checks in `ScrollMath` and `LyricsService` (search cleanup, instrumental JSON, scroll math).
+- Debug builds run small `Debug.Assert` checks in `ScrollMath`, `LrcParser`, and `LyricsService`.
 - Do not commit with a `Co-authored-by: Cursor` trailer if you want a single GitHub contributor.
 
 ---

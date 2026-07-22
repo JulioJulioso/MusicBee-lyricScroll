@@ -14,7 +14,7 @@ namespace MusicBeePlugin
         private LyricsService _lyricsService;
         private LyricsPanel _lyricsPanel;
         private Control _hostPanel;
-        private int _startDelayMs;
+        private PluginSettings _settings = new PluginSettings();
 
         public PluginInfo Initialise(IntPtr apiInterfacePtr)
         {
@@ -22,8 +22,7 @@ namespace MusicBeePlugin
             _mbApi.Initialise(apiInterfacePtr);
 
             _lyricsService = new LyricsService(GetLocalLyrics);
-
-            _startDelayMs = LoadStartDelayMs();
+            _settings = PluginSettings.Load(PersistentDir());
 
             _about.PluginInfoVersion        = PluginInfoVersion;
             _about.Name                     = "LyricScroll";
@@ -32,12 +31,12 @@ namespace MusicBeePlugin
             _about.TargetApplication        = "LyricScroll";
             _about.Type                     = PluginType.PanelView;
             _about.VersionMajor             = 1;
-            _about.VersionMinor             = 0;
-            _about.Revision                 = 5;
+            _about.VersionMinor             = 2;
+            _about.Revision                 = 0;
             _about.MinInterfaceVersion      = MinInterfaceVersion;
             _about.MinApiRevision           = MinApiRevision;
             _about.ReceiveNotifications     = ReceiveNotificationFlags.PlayerEvents;
-            _about.ConfigurationPanelHeight = 50;
+            _about.ConfigurationPanelHeight = 200;
 
             return _about;
         }
@@ -125,7 +124,7 @@ namespace MusicBeePlugin
 
             _lyricsPanel = new LyricsPanel(() => _mbApi.Player_GetPosition());
             _lyricsPanel.Dock = DockStyle.Fill;
-            _lyricsPanel.SetStartDelayMs(_startDelayMs);
+            _lyricsPanel.ApplyAppearance(_settings);
             panel.Controls.Add(_lyricsPanel);
             _lyricsPanel.BringToFront();
             panel.PerformLayout();
@@ -308,7 +307,8 @@ namespace MusicBeePlugin
 
             Task.Run(async () =>
             {
-                string lyrics = await _lyricsService.GetLyricsAsync(title, artist, album, duration);
+                LyricsResult lyrics = await _lyricsService.GetLyricsAsync(
+                    title, artist, album, duration, _settings.PreferSyncedLines);
                 InvokeOnMbUi(() => _lyricsPanel?.SetLyrics(lyrics, duration));
             });
         }
@@ -321,39 +321,193 @@ namespace MusicBeePlugin
             Panel panel = (Panel)Control.FromHandle(panelHandle);
             panel.Controls.Clear();
 
-            Label label = new Label
+            int y = 10;
+
+            Label delayLabel = new Label
             {
                 Text = "Start delay (seconds):",
                 AutoSize = true,
                 Left = 8,
-                Top = 14
+                Top = y + 3
             };
-
             NumericUpDown delayUpDown = new NumericUpDown
             {
                 Minimum = 0,
                 Maximum = 600,
-                Value = Math.Min(600, Math.Max(0, _startDelayMs / 1000)),
+                Value = Math.Min(600, Math.Max(0, _settings.StartDelayMs / 1000)),
                 Left = 170,
-                Top = 10,
-                Width = 80
+                Top = y,
+                Width = 70
             };
-
             delayUpDown.ValueChanged += (s, e) =>
             {
-                _startDelayMs = (int)delayUpDown.Value * 1000;
-                _lyricsPanel?.SetStartDelayMs(_startDelayMs);
+                _settings.StartDelayMs = (int)delayUpDown.Value * 1000;
+                ApplySettingsToPanel();
+            };
+            y += 28;
+
+            CheckBox syncedCheck = new CheckBox
+            {
+                Text = "Prefer synced lines (LRCLIB LRC)",
+                AutoSize = true,
+                Left = 8,
+                Top = y,
+                Checked = _settings.PreferSyncedLines
+            };
+            syncedCheck.CheckedChanged += (s, e) =>
+            {
+                _settings.PreferSyncedLines = syncedCheck.Checked;
+                OnTrackChanged();
+            };
+            y += 28;
+
+            Label padLabel = new Label
+            {
+                Text = "Padding (px):",
+                AutoSize = true,
+                Left = 8,
+                Top = y + 3
+            };
+            NumericUpDown padUpDown = new NumericUpDown
+            {
+                Minimum = 0,
+                Maximum = 48,
+                Value = Math.Min(48, Math.Max(0, _settings.PaddingPx)),
+                Left = 170,
+                Top = y,
+                Width = 70
+            };
+            padUpDown.ValueChanged += (s, e) =>
+            {
+                _settings.PaddingPx = (int)padUpDown.Value;
+                ApplySettingsToPanel();
+            };
+            y += 36;
+
+            Button backBtn = MakeColorButton("Background…", _settings.BackColor, 8, y);
+            backBtn.Click += (s, e) =>
+            {
+                using (var dlg = new ColorDialog { Color = _settings.BackColor, FullOpen = true })
+                {
+                    if (dlg.ShowDialog() != DialogResult.OK)
+                        return;
+                    _settings.BackColorHex = PluginSettings.ToHex(dlg.Color);
+                    backBtn.BackColor = dlg.Color;
+                    backBtn.ForeColor = ContrastText(dlg.Color);
+                    ApplySettingsToPanel();
+                }
             };
 
-            panel.Controls.Add(label);
+            Button textBtn = MakeColorButton("Text…", _settings.TextColor, 150, y);
+            textBtn.Click += (s, e) =>
+            {
+                using (var dlg = new ColorDialog { Color = _settings.TextColor, FullOpen = true })
+                {
+                    if (dlg.ShowDialog() != DialogResult.OK)
+                        return;
+                    _settings.TextColorHex = PluginSettings.ToHex(dlg.Color);
+                    textBtn.BackColor = dlg.Color;
+                    textBtn.ForeColor = ContrastText(dlg.Color);
+                    ApplySettingsToPanel();
+                }
+            };
+            y += 36;
+
+            Button fontBtn = new Button
+            {
+                Text = "Font: " + _settings.FontFamily + " " + _settings.FontSizePt.ToString("0.#") + "pt",
+                Left = 8,
+                Top = y,
+                Width = 280,
+                Height = 28
+            };
+            fontBtn.Click += (s, e) =>
+            {
+                using (Font current = _settings.CreateFont())
+                using (var dlg = new FontDialog { Font = current, MinSize = 8, MaxSize = 48 })
+                {
+                    if (dlg.ShowDialog() != DialogResult.OK)
+                        return;
+                    _settings.FontFamily = dlg.Font.FontFamily.Name;
+                    _settings.FontSizePt = dlg.Font.SizeInPoints;
+                    _settings.FontBold = dlg.Font.Bold;
+                    fontBtn.Text = "Font: " + _settings.FontFamily + " " + _settings.FontSizePt.ToString("0.#") + "pt";
+                    ApplySettingsToPanel();
+                }
+            };
+            y += 36;
+
+            Button resetBtn = new Button
+            {
+                Text = "Reset look",
+                Left = 8,
+                Top = y,
+                Width = 100,
+                Height = 26
+            };
+            resetBtn.Click += (s, e) =>
+            {
+                int delay = _settings.StartDelayMs;
+                bool preferSynced = _settings.PreferSyncedLines;
+                _settings = new PluginSettings
+                {
+                    StartDelayMs = delay,
+                    PreferSyncedLines = preferSynced
+                };
+                delayUpDown.Value = Math.Min(600, Math.Max(0, delay / 1000));
+                syncedCheck.Checked = preferSynced;
+                padUpDown.Value = _settings.PaddingPx;
+                backBtn.BackColor = _settings.BackColor;
+                backBtn.ForeColor = ContrastText(_settings.BackColor);
+                textBtn.BackColor = _settings.TextColor;
+                textBtn.ForeColor = ContrastText(_settings.TextColor);
+                fontBtn.Text = "Font: " + _settings.FontFamily + " " + _settings.FontSizePt.ToString("0.#") + "pt";
+                ApplySettingsToPanel();
+            };
+
+            panel.Controls.Add(delayLabel);
             panel.Controls.Add(delayUpDown);
+            panel.Controls.Add(syncedCheck);
+            panel.Controls.Add(padLabel);
+            panel.Controls.Add(padUpDown);
+            panel.Controls.Add(backBtn);
+            panel.Controls.Add(textBtn);
+            panel.Controls.Add(fontBtn);
+            panel.Controls.Add(resetBtn);
             return false;
+        }
+
+        private static Button MakeColorButton(string text, Color color, int left, int top)
+        {
+            return new Button
+            {
+                Text = text,
+                Left = left,
+                Top = top,
+                Width = 130,
+                Height = 28,
+                BackColor = color,
+                ForeColor = ContrastText(color),
+                FlatStyle = FlatStyle.Flat
+            };
+        }
+
+        private static Color ContrastText(Color bg)
+        {
+            // Relative luminance threshold — pick black or white label text.
+            double y = (0.299 * bg.R + 0.587 * bg.G + 0.114 * bg.B) / 255.0;
+            return y > 0.55 ? Color.Black : Color.White;
+        }
+
+        private void ApplySettingsToPanel()
+        {
+            _lyricsPanel?.ApplyAppearance(_settings);
         }
 
         public void SaveSettings()
         {
-            SaveStartDelayMs(_startDelayMs);
-            _lyricsPanel?.SetStartDelayMs(_startDelayMs);
+            _settings.Save(PersistentDir());
+            ApplySettingsToPanel();
         }
 
         public void Close(PluginCloseReason reason)
@@ -376,9 +530,17 @@ namespace MusicBeePlugin
         {
             try
             {
-                string path = DelaySettingsPath();
-                if (path != null && File.Exists(path))
-                    File.Delete(path);
+                string dir = PersistentDir();
+                if (string.IsNullOrEmpty(dir))
+                    return;
+
+                string json = Path.Combine(dir, "LyricScroll.settings.json");
+                if (File.Exists(json))
+                    File.Delete(json);
+
+                string legacy = Path.Combine(dir, "LyricScroll_startDelayMs.txt");
+                if (File.Exists(legacy))
+                    File.Delete(legacy);
             }
             catch
             {
@@ -386,50 +548,15 @@ namespace MusicBeePlugin
             }
         }
 
-        private string DelaySettingsPath()
+        private string PersistentDir()
         {
             try
             {
-                string dir = _mbApi.Setting_GetPersistentStoragePath();
-                if (string.IsNullOrEmpty(dir))
-                    return null;
-                return Path.Combine(dir, "LyricScroll_startDelayMs.txt");
+                return _mbApi.Setting_GetPersistentStoragePath();
             }
             catch
             {
                 return null;
-            }
-        }
-
-        private int LoadStartDelayMs()
-        {
-            try
-            {
-                string path = DelaySettingsPath();
-                if (path == null || !File.Exists(path))
-                    return 0;
-                if (int.TryParse(File.ReadAllText(path).Trim(), out int ms) && ms >= 0)
-                    return ms;
-            }
-            catch
-            {
-                // ignore
-            }
-            return 0;
-        }
-
-        private void SaveStartDelayMs(int ms)
-        {
-            try
-            {
-                string path = DelaySettingsPath();
-                if (path == null)
-                    return;
-                File.WriteAllText(path, Math.Max(0, ms).ToString());
-            }
-            catch
-            {
-                // ignore
             }
         }
     }

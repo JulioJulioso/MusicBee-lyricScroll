@@ -7,9 +7,13 @@ using Newtonsoft.Json.Linq;
 namespace MusicBeePlugin
 {
     /// <summary>
-    /// Lyrics waterfall:
-    /// 1. Local MusicBee sources (skip empty / "no lyrics" stubs; honor instrumental markers)
-    /// 2. LRCLIB with cleaned artist/title (e.g. "Bob Dylan (Rare)" → "Bob Dylan")
+    /// Lyrics waterfall (preferSynced=true, default):
+    /// 1. LRCLIB instrumental overrides bad local tags (OST)
+    /// 2. LRCLIB synced LRC (best timing)
+    /// 3. Local LRC if parseable
+    /// 4. Local plain / MusicBee lyrics
+    /// 5. LRCLIB plain
+    /// 6. OST heuristic → Instrumental
     /// </summary>
     public class LyricsService
     {
@@ -17,8 +21,6 @@ namespace MusicBeePlugin
 
         private readonly Func<string> _getLocalLyrics;
         private static readonly HttpClient _http = CreateHttpClient();
-        private static readonly Regex _lrcTags = new Regex(@"\[[0-9:.]+\]", RegexOptions.Compiled);
-        // "Bob Dylan (Rare)", "Title [Live]", "Song (Remastered 2015)"
         private static readonly Regex _trailingBracket = new Regex(
             @"\s*[\(\[][^\)\]]*[\)\]]\s*$",
             RegexOptions.Compiled);
@@ -33,37 +35,51 @@ namespace MusicBeePlugin
             var http = new HttpClient();
             http.DefaultRequestHeaders.TryAddWithoutValidation(
                 "User-Agent",
-                "MB_LyricScroll/1.0 (https://github.com/JulioJulioso/MusicBee-lyricScroll)");
+                "MB_LyricScroll/1.2 (https://github.com/JulioJulioso/MusicBee-lyricScroll)");
             return http;
         }
 
-        public async Task<string> GetLyricsAsync(string title, string artist, string album, int durationMs)
+        public async Task<LyricsResult> GetLyricsAsync(
+            string title,
+            string artist,
+            string album,
+            int durationMs,
+            bool preferSynced = true)
         {
-            string local = SafeGetLocal()?.Trim() ?? string.Empty;
+            string localRaw = SafeGetLocal()?.Trim() ?? string.Empty;
 
-            if (IsInstrumentalMarker(local))
-                return InstrumentalMessage;
+            if (IsInstrumentalMarker(localRaw))
+                return LyricsResult.Instrumental;
 
-            bool hasLocal = !string.IsNullOrWhiteSpace(local) && !IsNoLyricsStub(local);
+            bool hasLocal = !string.IsNullOrWhiteSpace(localRaw) && !IsNoLyricsStub(localRaw);
+            LyricsResult local = hasLocal ? LrcParser.TryParseResult(localRaw) : LyricsResult.Empty;
 
             // Always ask LRCLIB: OST tags often contain wrong scraped lyrics while LRCLIB
             // correctly marks the track instrumental (e.g. Interstellar — S.T.A.Y.).
-            string lrclib = await FetchFromLrclibAsync(title, artist, album, durationMs).ConfigureAwait(false);
+            LyricsResult lrclib = await FetchFromLrclibAsync(title, artist, album, durationMs)
+                .ConfigureAwait(false);
 
-            if (string.Equals(lrclib, InstrumentalMessage, StringComparison.Ordinal))
-                return InstrumentalMessage;
+            if (lrclib.IsInstrumental)
+                return LyricsResult.Instrumental;
 
-            if (hasLocal)
+            if (preferSynced)
+            {
+                if (lrclib.HasSync)
+                    return lrclib;
+                if (local.HasSync)
+                    return local;
+            }
+
+            if (hasLocal && !local.IsEmpty)
                 return local;
 
-            if (!string.IsNullOrWhiteSpace(lrclib))
-                return lrclib.Trim();
+            if (!lrclib.IsEmpty)
+                return lrclib;
 
-            // Soundtrack / score cues with no online lyrics → don't keep guessing.
             if (LooksLikeScoreOrOst(title, album))
-                return InstrumentalMessage;
+                return LyricsResult.Instrumental;
 
-            return string.Empty;
+            return LyricsResult.Empty;
         }
 
         private string SafeGetLocal()
@@ -78,7 +94,7 @@ namespace MusicBeePlugin
             }
         }
 
-        private async Task<string> FetchFromLrclibAsync(string title, string artist, string album, int durationMs)
+        private async Task<LyricsResult> FetchFromLrclibAsync(string title, string artist, string album, int durationMs)
         {
             try
             {
@@ -87,32 +103,29 @@ namespace MusicBeePlugin
                 string cleanAlbum = CleanForSearch(album);
 
                 if (string.IsNullOrWhiteSpace(cleanTitle) || string.IsNullOrWhiteSpace(cleanArtist))
-                    return string.Empty;
+                    return LyricsResult.Empty;
 
                 int durationSeconds = Math.Max(durationMs / 1000, 0);
 
-                // 1) Exact get with album
-                string result = await LrclibGetAsync(cleanTitle, cleanArtist, cleanAlbum, durationSeconds)
+                LyricsResult result = await LrclibGetAsync(cleanTitle, cleanArtist, cleanAlbum, durationSeconds)
                     .ConfigureAwait(false);
-                if (!string.IsNullOrEmpty(result))
+                if (!result.IsEmpty)
                     return result;
 
-                // 2) Get without album (live/bootleg album names often break the match)
                 result = await LrclibGetAsync(cleanTitle, cleanArtist, album: null, durationSeconds)
                     .ConfigureAwait(false);
-                if (!string.IsNullOrEmpty(result))
+                if (!result.IsEmpty)
                     return result;
 
-                // 3) Search fallback (more tolerant than /get)
                 return await LrclibSearchAsync(cleanTitle, cleanArtist, durationSeconds).ConfigureAwait(false);
             }
             catch
             {
-                return string.Empty;
+                return LyricsResult.Empty;
             }
         }
 
-        private async Task<string> LrclibGetAsync(string title, string artist, string album, int durationSeconds)
+        private async Task<LyricsResult> LrclibGetAsync(string title, string artist, string album, int durationSeconds)
         {
             string url = "https://lrclib.net/api/get" +
                          "?track_name=" + Uri.EscapeDataString(title) +
@@ -124,13 +137,13 @@ namespace MusicBeePlugin
 
             HttpResponseMessage response = await _http.GetAsync(url).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
-                return string.Empty;
+                return LyricsResult.Empty;
 
             string json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             return ParseLrclibJson(json);
         }
 
-        private async Task<string> LrclibSearchAsync(string title, string artist, int durationSeconds)
+        private async Task<LyricsResult> LrclibSearchAsync(string title, string artist, int durationSeconds)
         {
             string url = "https://lrclib.net/api/search" +
                          "?track_name=" + Uri.EscapeDataString(title) +
@@ -138,23 +151,22 @@ namespace MusicBeePlugin
 
             HttpResponseMessage response = await _http.GetAsync(url).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
-                return string.Empty;
+                return LyricsResult.Empty;
 
             string json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
             JArray arr = JArray.Parse(json);
             if (arr.Count == 0)
-                return string.Empty;
+                return LyricsResult.Empty;
 
-            // Prefer closest duration, then first hit with usable lyrics.
             JObject best = null;
             int bestDelta = int.MaxValue;
+            bool bestHasSync = false;
 
             foreach (JToken token in arr)
             {
                 if (!(token is JObject obj))
                     continue;
 
-                // Reject wrong-song hits (search is loose on short titles like "S.T.A.Y.").
                 if (!ArtistMatches(artist, obj.Value<string>("artistName")))
                     continue;
 
@@ -163,21 +175,28 @@ namespace MusicBeePlugin
                     ? Math.Abs(dur - durationSeconds)
                     : 9999;
 
+                bool hasSync = !string.IsNullOrWhiteSpace(obj.Value<string>("syncedLyrics"));
                 bool hasText = !string.IsNullOrWhiteSpace(obj.Value<string>("plainLyrics"))
-                               || !string.IsNullOrWhiteSpace(obj.Value<string>("syncedLyrics"))
+                               || hasSync
                                || obj.Value<bool?>("instrumental") == true;
 
                 if (!hasText)
                     continue;
 
-                if (best == null || delta < bestDelta)
+                // Prefer closer duration; on a tie, prefer a hit that has synced lyrics.
+                bool better = best == null
+                              || delta < bestDelta
+                              || (delta == bestDelta && hasSync && !bestHasSync);
+
+                if (better)
                 {
                     best = obj;
                     bestDelta = delta;
+                    bestHasSync = hasSync;
                 }
             }
 
-            return best == null ? string.Empty : ParseLrclibJson(best.ToString());
+            return best == null ? LyricsResult.Empty : ParseLrclibJson(best.ToString());
         }
 
         /// <summary>
@@ -189,7 +208,6 @@ namespace MusicBeePlugin
                 return string.Empty;
 
             string s = value.Trim();
-            // Peel a few stacked suffixes: "Artist (Live) (Bootleg)"
             for (int i = 0; i < 3; i++)
             {
                 string next = _trailingBracket.Replace(s, "").Trim();
@@ -216,7 +234,6 @@ namespace MusicBeePlugin
                 || Regex.IsMatch(blob, @"\bost\b") || blob.Contains("score"))
                 return true;
 
-            // Titles like S.T.A.Y. / D.M.T. on scores are almost never sung lyrics.
             string t = (title ?? "").Trim();
             return Regex.IsMatch(t, @"^[A-Za-z]([.\u2024\u00B7][A-Za-z]){1,}[.\u2024\u00B7]?$");
         }
@@ -252,28 +269,39 @@ namespace MusicBeePlugin
                    || lower == "not available"
                    || lower == "n/a"
                    || lower == "none"
-                   || lower == "instrumental"; // also treated as stub if we want LRCLIB — but instrumental marker runs first
+                   || lower == "instrumental";
         }
 
-        internal static string ParseLrclibJson(string json)
+        /// <summary>
+        /// Prefer syncedLyrics when present; fall back to plainLyrics.
+        /// </summary>
+        internal static LyricsResult ParseLrclibJson(string json)
         {
             if (string.IsNullOrWhiteSpace(json))
-                return string.Empty;
+                return LyricsResult.Empty;
 
             JObject obj = JObject.Parse(json);
 
             if (obj.Value<bool?>("instrumental") == true)
-                return InstrumentalMessage;
+                return LyricsResult.Instrumental;
+
+            string synced = obj.Value<string>("syncedLyrics");
+            if (!string.IsNullOrWhiteSpace(synced))
+            {
+                LyricsResult timed = LrcParser.TryParseResult(synced);
+                if (timed.HasSync)
+                    return timed;
+            }
 
             string plain = obj.Value<string>("plainLyrics");
             if (!string.IsNullOrWhiteSpace(plain))
-                return plain;
+                return LyricsResult.FromPlain(plain);
 
-            string synced = obj.Value<string>("syncedLyrics");
-            if (string.IsNullOrWhiteSpace(synced))
-                return string.Empty;
+            // Synced present but unparseable — strip tags for plain fallback.
+            if (!string.IsNullOrWhiteSpace(synced))
+                return LyricsResult.FromPlain(LrcParser.TryParseResult(synced).PlainText);
 
-            return _lrcTags.Replace(synced, "").Trim();
+            return LyricsResult.Empty;
         }
 
 #if DEBUG
@@ -282,9 +310,13 @@ namespace MusicBeePlugin
             System.Diagnostics.Debug.Assert(CleanForSearch("Bob Dylan (Rare)") == "Bob Dylan");
             System.Diagnostics.Debug.Assert(CleanForSearch("I Want You") == "I Want You");
             System.Diagnostics.Debug.Assert(
-                ParseLrclibJson("{\"instrumental\":true,\"plainLyrics\":null}") == InstrumentalMessage);
+                ParseLrclibJson("{\"instrumental\":true,\"plainLyrics\":null}").IsInstrumental);
             System.Diagnostics.Debug.Assert(
-                ParseLrclibJson("{\"plainLyrics\":\"Hello\\nWorld\"}") == "Hello\nWorld");
+                ParseLrclibJson("{\"plainLyrics\":\"Hello\\nWorld\"}").PlainText == "Hello\nWorld");
+            System.Diagnostics.Debug.Assert(
+                ParseLrclibJson(
+                    "{\"syncedLyrics\":\"[00:01.00]Hello\\n[00:05.00]World\",\"plainLyrics\":\"Hello\\nWorld\"}")
+                    .HasSync);
             System.Diagnostics.Debug.Assert(IsInstrumentalMarker("Instrumental"));
             System.Diagnostics.Debug.Assert(IsNoLyricsStub("No lyrics found."));
             System.Diagnostics.Debug.Assert(ArtistMatches("Hans Zimmer", "Hans Zimmer"));
